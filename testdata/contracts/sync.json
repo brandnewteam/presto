@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "module": "examplemodule",
+  "source": {
+    "examplemodule.php": "<?php\n$this->version = '1.2.3';\n",
+    "src/code.php": "original",
+    "new.php": "new code",
+    "same.php": "same",
+    "uploads/local.txt": "must not ship",
+    "tests/dev.php": "must not ship",
+    ".env.example": "template"
+  },
+  "destination": {
+    "examplemodule.php": "old entry point",
+    "src/code.php": "modified",
+    "same.php": "same",
+    "obsolete.php": "remove",
+    "tests/stale.php": "remove",
+    "uploads/live.txt": "keep"
+  },
+  "include": [".env.example"],
+  "expected": {
+    "created": [".env.example", "new.php"],
+    "updated": ["examplemodule.php", "src/code.php"],
+    "deleted": ["obsolete.php", "tests/stale.php"],
+    "unchanged": 1
+  },
+  "expected_destination": {
+    "examplemodule.php": "<?php\n$this->version = '1.2.3';\n",
+    "src/code.php": "original",
+    "new.php": "new code",
+    "same.php": "same",
+    ".env.example": "template",
+    "uploads/live.txt": "keep"
+  }
+}
