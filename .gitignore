@@ -1,0 +1,6 @@
+/bin/
+/dist/
+/presto
+/presto.exe
+/coverage.out
+/presto.local.toml
