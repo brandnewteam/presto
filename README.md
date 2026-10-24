@@ -4,6 +4,7 @@ A Go CLI for developing PrestaShop modules in repositories separate from shop in
 
 ```text
 presto build
+presto sync
 presto sync local --dry-run
 presto sync local
 presto deploy production --dry-run
@@ -45,7 +46,7 @@ Put the executable in a directory on your PATH. A prebuilt executable requires n
 The release builder uses Go rather than a shell script:
 
 ```sh
-go run ./tools/release -version 0.1.0
+go run ./tools/release -version 0.1.1
 ```
 
 It produces macOS, Linux, and Windows executables for amd64 and arm64 in `dist/`, plus `checksums.sha256`. macOS is the primary development platform. Native Windows build/local sync are included in CI; the POSIX SSH stand-in test is skipped on Windows. Cross-compiling alone does not establish Windows runtime compatibility.
@@ -91,6 +92,23 @@ For Windows local targets, TOML literal strings make paths convenient:
 type = "local"
 root = 'C:\dev\prestashop'
 ```
+
+## Sync all local installations
+
+Run `presto sync` without a target to synchronize the current module to every configured **local** target, in alphabetical order. SSH targets are handled through `deploy <target>` and are not selected by this command. Configuration layers and project overrides apply normally.
+
+```sh
+presto sync
+presto sync --dry-run
+presto sync --json
+presto sync local
+```
+
+All selected shop roots and source/destination overlaps are checked before any synchronization starts. Presto prepares one shared snapshot, including production Composer dependencies when enabled, and then applies it sequentially with each target's own PrestaShop lifecycle settings. Sync does not generate `config.xml`.
+
+An error during an individual target's synchronization is reported while the remaining targets continue; the command exits nonzero if any target fails. Cancellation stops further targets. Invalid configuration, an invalid shop root, or preparation failure stops the command before any target is changed. There is no rollback of targets already synchronized.
+
+With `--json`, the no-target form emits one array in target order. Each entry contains `target` plus the normal result fields; failed entries also contain `error` and any available upgrade details. The no-target form always emits an array, even with only one local target. The array is still emitted when a target fails, with a nonzero exit status. Setup failures occur before result output; after cancellation the array includes only attempted targets. `presto sync <target> --json` keeps its existing single-object output. With no local targets configured, `presto sync` returns an error.
 
 ## Module configuration
 

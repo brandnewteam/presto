@@ -187,38 +187,55 @@ func buildCommand(opts *options) *cobra.Command {
 }
 
 func syncCommand(opts *options, deployment bool) *cobra.Command {
-	name, description := "sync", "Synchronize a module into a local PrestaShop installation"
+	name, description := "sync", "Synchronize a module into one or all configured local PrestaShop installations"
+	usage, arguments := "sync [target]", cobra.MaximumNArgs(1)
 	if deployment {
 		name, description = "deploy", "Send one ZIP over SSH and synchronize it with the remote Go receiver"
+		usage, arguments = "deploy <target>", cobra.ExactArgs(1)
 	}
 	var dryRun bool
-	cmd := &cobra.Command{Use: name + " <target>", Short: description, Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: usage, Short: description, Args: arguments, RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, project, err := load(opts, true)
 		if err != nil {
 			return err
 		}
-		target, ok := cfg.Targets[args[0]]
-		if !ok {
-			return fmt.Errorf("unknown target %q; run presto targets", args[0])
+		allTargets := !deployment && len(args) == 0
+		targetNames := args
+		if allTargets {
+			for targetName, target := range cfg.Targets {
+				if target.Type == "local" {
+					targetNames = append(targetNames, targetName)
+				}
+			}
+			sort.Strings(targetNames)
+			if len(targetNames) == 0 {
+				return fmt.Errorf("no local targets configured; run presto init --global")
+			}
 		}
 		expected := "local"
 		if deployment {
 			expected = "ssh"
 		}
-		if target.Type != expected {
-			return fmt.Errorf("%s requires a %s target; %q is %s", name, expected, args[0], target.Type)
-		}
-		if !deployment {
-			module := cfg.Module.Name
-			if module == "" {
-				module = filepath.Base(project)
+		for _, targetName := range targetNames {
+			target, ok := cfg.Targets[targetName]
+			if !ok {
+				return fmt.Errorf("unknown target %q; run presto targets", targetName)
 			}
-			destination, err := engine.ShopModule(target.Root, module)
-			if err != nil {
-				return err
+			if target.Type != expected {
+				return fmt.Errorf("%s requires a %s target; %q is %s", name, expected, targetName, target.Type)
 			}
-			if engine.Overlaps(project, destination) {
-				return fmt.Errorf("project and target overlap; use a separate module repository")
+			if !deployment {
+				module := cfg.Module.Name
+				if module == "" {
+					module = filepath.Base(project)
+				}
+				destination, err := engine.ShopModule(target.Root, module)
+				if err != nil {
+					return fmt.Errorf("target %q: %w", targetName, err)
+				}
+				if engine.Overlaps(project, destination) {
+					return fmt.Errorf("target %q: project and target overlap; use a separate module repository", targetName)
+				}
 			}
 		}
 		snapshot, cleanup, err := engine.Prepare(cmd.Context(), project, cfg, opts.noComposer, cmd.ErrOrStderr())
@@ -226,6 +243,10 @@ func syncCommand(opts *options, deployment bool) *cobra.Command {
 			return err
 		}
 		defer cleanup()
+		if allTargets {
+			return syncAllTargets(cmd, opts.json, cfg, targetNames, snapshot, dryRun)
+		}
+		target := cfg.Targets[targetNames[0]]
 		var result engine.Result
 		if deployment {
 			if err := engine.AddConfigXML(snapshot, cfg.Module.ConfigXML); err != nil {
@@ -241,7 +262,7 @@ func syncCommand(opts *options, deployment bool) *cobra.Command {
 			}
 			return err
 		}
-		return printResult(cmd, opts.json, args[0], result)
+		return printResult(cmd, opts.json, targetNames[0], result)
 	}}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show content changes without modifying the destination")
 	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {

@@ -5,9 +5,9 @@ This is the compatibility surface for a future Python implementation. Implementa
 ## Commands and configuration
 
 - `build` packages the prepared working tree under a single module ZIP directory.
-- `sync <target>` accepts exactly one named local target.
+- `sync [target]` accepts one named local target, or selects all configured local targets when the argument is omitted. SSH targets are excluded from the no-target form.
 - `deploy <target>` accepts exactly one named SSH target.
-- Both synchronization commands support `--dry-run` and emit the same result JSON with `--json`.
+- Both synchronization commands support `--dry-run`. Explicit targets emit one result object with `--json`; the no-target sync form emits an ordered array as described below.
 - `targets`, `doctor [target]`, `init [--global]`, shell completion, and `--version` support setup and inspection.
 - Global flags: `--config`, `--project`/`-C`, `--json`, `--no-composer`.
 - TOML schema 1 uses `module`, `files`, `composer`, and named `targets` as described in README. Unknown keys fail. Merge rule arrays by concatenation, scalar values by last explicit value, and entire named targets by replacement.
@@ -39,6 +39,14 @@ Result JSON has stable fields:
 ```
 
 The three path arrays are always arrays, including when empty. Destination uses the receiver's native absolute path. Root symlinks are resolved before checking overlap. Source/destination overlap is an error. A shop root must contain a regular `config/config.inc.php` and a real `modules` directory.
+
+## Synchronizing all local targets
+
+For `sync` without a target, resolve all configuration layers, select type=local targets and sort their names lexicographically. No local targets is an error. Validate every selected shop root and source overlap before preparation or module writes. Prepare the module and Composer dependencies once, then synchronize each target sequentially from the same snapshot using its own lifecycle settings. Do not generate config.xml, contact SSH targets or change deploy's required target argument.
+
+Continue with later targets after an individual apply failure and return nonzero if any apply failed. Cancellation stops further targets. Configuration, root validation and shared preparation errors stop the operation before any destination changes. Previously completed targets are not rolled back.
+
+The no-target --json output is one array, even for a single selected target. Entries contain target plus the existing result fields. A failed entry includes error and any available upgrade details, and the process still exits nonzero. Setup errors occur before array output; after cancellation only attempted targets appear. Explicit-target JSON remains one object with its existing shape. No receiver or wire-protocol change is required.
 
 ## Deployment protocol 1
 
