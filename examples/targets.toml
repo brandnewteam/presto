@@ -1,0 +1,31 @@
+# Example targets; replace these paths and the SSH alias with your own settings.
+# This file does not install or connect to either target.
+schema = 1
+
+[targets.local]
+type = "local"
+root = "~/Sites/prestashop"
+
+[targets.production]
+type = "ssh"
+host = "shop-server"
+root = "/var/www/prestashop"
+agent = "~/.local/bin/presto"
+
+# Override per project when a legacy module requires an older PHP runtime.
+# [composer]
+# command = ["/path/to/php7.1", "/path/to/composer.phar"]
+
+# Optional native PrestaShop 1.6 upgrade/deactivation after deployment.
+# Enable separately for each target and choose its exact shop context.
+# [targets.production.prestashop]
+# upgrade = true
+# php = ["/usr/bin/php7.1"]
+# shop_context = "all"
+
+# For a single local shop instead:
+# [targets.local.prestashop]
+# upgrade = true
+# php = ["/path/to/compatible/php"]
+# shop_context = "shop"
+# shop_id = 1
