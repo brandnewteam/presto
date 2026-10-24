@@ -11,17 +11,26 @@ import (
 	"sort"
 	"strings"
 
+	"io"
 	"presto/internal/config"
+	"presto/internal/lifecycle"
 )
 
 type Result struct {
-	Module      string   `json:"module"`
-	Destination string   `json:"destination"`
-	DryRun      bool     `json:"dry_run"`
-	Created     []string `json:"created"`
-	Updated     []string `json:"updated"`
-	Deleted     []string `json:"deleted"`
-	Unchanged   int      `json:"unchanged"`
+	Module      string            `json:"module"`
+	Destination string            `json:"destination"`
+	DryRun      bool              `json:"dry_run"`
+	Created     []string          `json:"created"`
+	Updated     []string          `json:"updated"`
+	Deleted     []string          `json:"deleted"`
+	Unchanged   int               `json:"unchanged"`
+	Upgrade     *lifecycle.Result `json:"upgrade,omitempty"`
+	Error       string            `json:"error,omitempty"`
+}
+
+type SyncOptions struct {
+	PrestaShop *config.PrestaShop
+	Logs       io.Writer
 }
 
 // ShopModule refuses arbitrary destination directories; root must look like a shop.
@@ -69,11 +78,35 @@ func Overlaps(source, destination string) bool {
 
 // Synchronize computes content hashes even when file sizes and mtimes agree.
 // Writes replace debugging edits; preserved paths are never visited or modified.
-func Synchronize(ctx context.Context, snapshot *Snapshot, shopRoot string, dryRun bool) (Result, error) {
+func Synchronize(ctx context.Context, snapshot *Snapshot, shopRoot string, dryRun bool, options ...SyncOptions) (result Result, resultErr error) {
+	var opts SyncOptions
+	if len(options) > 1 {
+		return result, fmt.Errorf("only one sync options value is supported")
+	}
+	if len(options) == 1 {
+		opts = options[0]
+	}
+	if opts.PrestaShop != nil {
+		if err := opts.PrestaShop.Validate(); err != nil {
+			return result, err
+		}
+	}
+	enabled := opts.PrestaShop != nil && opts.PrestaShop.Upgrade
 	destination, err := ShopModule(shopRoot, snapshot.Name)
-	result := Result{Module: snapshot.Name, Destination: destination, DryRun: dryRun, Created: []string{}, Updated: []string{}, Deleted: []string{}}
+	result = Result{Module: snapshot.Name, Destination: destination, DryRun: dryRun, Created: []string{}, Updated: []string{}, Deleted: []string{}}
 	if err != nil {
 		return result, err
+	}
+	if enabled {
+		result.Upgrade = lifecycle.Planned(*opts.PrestaShop)
+		defer func() {
+			if resultErr != nil {
+				result.Error = resultErr.Error()
+				if result.Upgrade.Status == "pending" || result.Upgrade.Status == "planned" {
+					result.Upgrade.Status = "not_run"
+				}
+			}
+		}()
 	}
 	if Overlaps(snapshot.Root, destination) || (snapshot.Source != "" && Overlaps(snapshot.Source, destination)) {
 		return result, fmt.Errorf("source and destination overlap")
@@ -184,6 +217,23 @@ func Synchronize(ctx context.Context, snapshot *Snapshot, shopRoot string, dryRu
 	if dryRun {
 		return result, nil
 	}
+	var runner *lifecycle.Runner
+	if enabled {
+		result.Upgrade.Status = "preflight_failed"
+		runner, err = lifecycle.New(*opts.PrestaShop, filepath.Dir(filepath.Dir(destination)), snapshot.Name, snapshot.Version, opts.Logs)
+		if err != nil {
+			return result, err
+		}
+		defer runner.Close()
+		names := make([]string, 0, len(snapshot.Files))
+		for _, file := range snapshot.Files {
+			names = append(names, file.Path)
+		}
+		result.Upgrade, err = runner.Preflight(ctx, snapshot.Root, names)
+		if err != nil {
+			return result, err
+		}
+	}
 	// All validation and comparison finish before the first module file is changed.
 	if err := os.MkdirAll(destination, 0755); err != nil {
 		return result, err
@@ -222,6 +272,12 @@ func Synchronize(ctx context.Context, snapshot *Snapshot, shopRoot string, dryRu
 			if err := os.Remove(filepath.Join(destination, filepath.FromSlash(rel))); err != nil {
 				return result, err
 			}
+		}
+	}
+	if runner != nil {
+		result.Upgrade, err = runner.Finalize(ctx)
+		if err != nil {
+			return result, err
 		}
 	}
 	return result, nil

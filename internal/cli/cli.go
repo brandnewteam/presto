@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 	"presto/internal/config"
 	"presto/internal/engine"
+	"presto/internal/lifecycle"
 	"presto/internal/remote"
 )
 
@@ -42,14 +43,35 @@ func New(version string, stdin io.Reader, stdout, stderr io.Writer) *cobra.Comma
 		if shop == "" {
 			return fmt.Errorf("receive requires --root")
 		}
-		result, err := engine.Receive(cmd.Context(), cmd.InOrStdin(), shop, dry)
+		encoded, _ := cmd.Flags().GetString("prestashop-json")
+		var settings *config.PrestaShop
+		if encoded != "" {
+			settings = &config.PrestaShop{}
+			decoder := json.NewDecoder(strings.NewReader(encoded))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(settings); err != nil {
+				return fmt.Errorf("invalid lifecycle settings: %w", err)
+			}
+			var extra any
+			if decoder.Decode(&extra) != io.EOF {
+				return fmt.Errorf("trailing lifecycle settings")
+			}
+			if err := settings.Validate(); err != nil {
+				return err
+			}
+		}
+		result, err := engine.Receive(cmd.Context(), cmd.InOrStdin(), shop, dry, engine.SyncOptions{PrestaShop: settings, Logs: cmd.ErrOrStderr()})
 		if err != nil {
+			if result.Upgrade != nil && result.Error != "" {
+				_ = json.NewEncoder(cmd.OutOrStdout()).Encode(result)
+			}
 			return err
 		}
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(result)
 	}})
 	receive, _, _ := root.Find([]string{"receive"})
 	receive.Flags().String("root", "", "PrestaShop root")
+	receive.Flags().String("prestashop-json", "", "private per-target lifecycle options")
 	receive.Flags().Bool("dry-run", false, "compare without writing module files")
 	agentInfo := &cobra.Command{Use: "agent-info", Hidden: true, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
 		shop, _ := cmd.Flags().GetString("root")
@@ -58,7 +80,7 @@ func New(version string, stdin io.Reader, stdout, stderr io.Writer) *cobra.Comma
 				return err
 			}
 		}
-		return json.NewEncoder(cmd.OutOrStdout()).Encode(remote.Info{Protocol: engine.Protocol, Version: version, OS: runtime.GOOS, Arch: runtime.GOARCH})
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(remote.Info{Protocol: engine.Protocol, Version: version, OS: runtime.GOOS, Arch: runtime.GOARCH, Capabilities: []string{lifecycle.Capability}})
 	}}
 	agentInfo.Flags().String("root", "", "check a PrestaShop root")
 	root.AddCommand(agentInfo)
@@ -208,9 +230,12 @@ func syncCommand(opts *options, deployment bool) *cobra.Command {
 		if deployment {
 			result, err = remote.Deploy(cmd.Context(), target, snapshot, dryRun, cmd.ErrOrStderr())
 		} else {
-			result, err = engine.Synchronize(cmd.Context(), snapshot, target.Root, dryRun)
+			result, err = engine.Synchronize(cmd.Context(), snapshot, target.Root, dryRun, engine.SyncOptions{PrestaShop: target.PrestaShop, Logs: cmd.ErrOrStderr()})
 		}
 		if err != nil {
+			if opts.json && result.Upgrade != nil && result.Error != "" {
+				_ = json.NewEncoder(cmd.OutOrStdout()).Encode(result)
+			}
 			return err
 		}
 		return printResult(cmd, opts.json, args[0], result)
@@ -252,6 +277,9 @@ func printResult(cmd *cobra.Command, asJSON bool, target string, result engine.R
 		for _, path := range group.paths {
 			fmt.Fprintf(cmd.OutOrStdout(), "  %s %s\n", group.prefix, path)
 		}
+	}
+	if result.Upgrade != nil {
+		fmt.Fprintf(cmd.OutOrStdout(), "PrestaShop: %s (context %s, shops %v, version %s → %s)\n", result.Upgrade.Status, result.Upgrade.ShopContext, result.Upgrade.ShopIDs, result.Upgrade.FromVersion, result.Upgrade.ToVersion)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "%d created, %d updated, %d deleted, %d unchanged\n", len(result.Created), len(result.Updated), len(result.Deleted), result.Unchanged)
 	return nil
@@ -320,6 +348,9 @@ func doctorCommand(opts *options) *cobra.Command {
 					return err
 				}
 				report["modules"] = filepath.Dir(destination)
+				if target.PrestaShop != nil {
+					report["prestashop"] = target.PrestaShop
+				}
 			}
 		}
 		encoder := json.NewEncoder(cmd.OutOrStdout())

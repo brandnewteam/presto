@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"presto/internal/engine"
+	"presto/internal/testshop"
 )
 
 func TestCLIEndToEnd(t *testing.T) {
@@ -171,3 +172,84 @@ type commandError struct {
 }
 
 func (e *commandError) Error() string { return e.err.Error() + ": " + e.logs }
+
+func TestCLILifecycleForSyncAndDeploy(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX SSH stand-in; engine lifecycle tests remain portable")
+	}
+	php := testshop.PHP(t)
+	base := t.TempDir()
+	binary := filepath.Join(base, "presto receiver's binary")
+	if out, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	project := filepath.Join(base, "examplemodule")
+	testshop.Put(t, project, "examplemodule.php", testshop.Module("1.3.0", "if (!empty(prestoState()['fail_constructor'])) { throw new Exception('bad constructor'); } echo 'module output';"))
+	testshop.Put(t, project, "upgrade/upgrade-1.1.0.php", "<?php\nfunction upgrade_module_1_1_0($module) { echo 'migration output'; return true; }\n")
+	local, remote := testshop.Create(t), testshop.Create(t)
+	testshop.Set(t, remote, "fail_constructor", true)
+	phpJSON, _ := json.Marshal(php) // JSON string arrays are also valid TOML arrays here.
+	global := filepath.Join(base, "config.toml")
+	settings := "\nupgrade=true\nshop_context='group'\nshop_group_id=1\nphp=" + string(phpJSON) + "\n"
+	testshop.Put(t, base, "config.toml", "[targets.local]\ntype='local'\nroot="+strconv.Quote(local)+"\n[targets.local.prestashop]"+settings+"[targets.remote]\ntype='ssh'\nhost='fixture.invalid'\nroot="+strconv.Quote(remote)+"\nagent="+strconv.Quote(binary)+"\n[targets.remote.prestashop]"+settings)
+	stub := filepath.Join(base, "ssh-bin", "ssh")
+	testshop.Put(t, base, "ssh-bin/ssh", "#!/bin/sh\nfor arg do last=$arg; done\nexec /bin/sh -c \"$last\"\n")
+	if err := os.Chmod(stub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	environment := append(os.Environ(), "PRESTO_CONFIG="+global, "PATH="+filepath.Dir(stub)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	invoke := func(args ...string) ([]byte, string, error) {
+		command := exec.Command(binary, args...)
+		command.Dir = project
+		command.Env = environment
+		var logs bytes.Buffer
+		command.Stderr = &logs
+		out, err := command.Output()
+		return out, logs.String(), err
+	}
+	out, logs, err := invoke("sync", "local", "--json")
+	if err != nil {
+		t.Fatalf("sync: %v\n%s", err, logs)
+	}
+	var result engine.Result
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("corrupt JSON due to PHP output: %v %s", err, out)
+	}
+	if result.Upgrade == nil || result.Upgrade.Status != "upgraded" || result.Upgrade.ToVersion != "1.3.0" {
+		t.Fatalf("%s", out)
+	}
+	before := testshop.State(t, remote)
+	out, logs, err = invoke("deploy", "remote", "--dry-run", "--json")
+	if err != nil {
+		t.Fatalf("dry run: %v %s", err, logs)
+	}
+	if err := json.Unmarshal(out, &result); err != nil || result.Upgrade.Status != "planned" {
+		t.Fatalf("%s %v", out, err)
+	}
+	after := testshop.State(t, remote)
+	if before["version"] != after["version"] {
+		t.Fatal("remote dry run upgraded database")
+	}
+	out, logs, err = invoke("deploy", "remote", "--json")
+	if err == nil {
+		t.Fatal("reported successful deployment after constructor error")
+	}
+	if err := json.Unmarshal(out, &result); err != nil {
+		t.Fatalf("missing structured failure: %v %s\n%s", err, out, logs)
+	}
+	if result.Error == "" || result.Upgrade == nil || !result.Upgrade.Disabled || result.Upgrade.Status != "failed" {
+		t.Fatalf("failure lost over SSH: %s\n%s", out, logs)
+	}
+	enabled := testshop.State(t, remote)["enabled"].([]any)
+	if len(enabled) != 1 || enabled[0] != float64(3) {
+		t.Fatalf("disabled shops outside group: %v", enabled)
+	}
+	testshop.Put(t, base, "ssh-bin/ssh", "#!/bin/sh\nprintf '%s' '{\"protocol\":1,\"version\":\"old\",\"os\":\"linux\",\"arch\":\"amd64\"}'\n")
+	if err := os.Chmod(stub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	_, logs, err = invoke("deploy", "remote", "--json")
+	if err == nil || !strings.Contains(logs, "does not support PrestaShop 1.6 finalization") {
+		t.Fatalf("accepted incompatible receiver: %v %s", err, logs)
+	}
+}

@@ -13,7 +13,7 @@ import (
 var version = "dev"
 
 func main() {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), terminationSignals()...)
 	defer cancel()
 	if err := cli.New(version, os.Stdin, os.Stdout, os.Stderr).ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "presto:", err)

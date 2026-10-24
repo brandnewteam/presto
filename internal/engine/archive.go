@@ -75,7 +75,7 @@ func header(name string, mode fs.FileMode) *zip.FileHeader {
 }
 
 // Receive validates an entire archive into private temporary storage before touching a shop.
-func Receive(ctx context.Context, reader io.Reader, shopRoot string, dryRun bool) (Result, error) {
+func Receive(ctx context.Context, reader io.Reader, shopRoot string, dryRun bool, options ...SyncOptions) (Result, error) {
 	var result Result
 	workspace, err := os.MkdirTemp("", "presto-receive-")
 	if err != nil {
@@ -223,7 +223,7 @@ func Receive(ctx context.Context, reader io.Reader, shopRoot string, dryRun bool
 		return result, fmt.Errorf("module entry point missing from manifest")
 	}
 	req.Root = root
-	return Synchronize(ctx, &req.Snapshot, shopRoot, dryRun)
+	return Synchronize(ctx, &req.Snapshot, shopRoot, dryRun, options...)
 }
 
 func validPath(name string) bool {

@@ -12,13 +12,16 @@ import (
 
 	"presto/internal/config"
 	"presto/internal/engine"
+	"presto/internal/lifecycle"
+	"slices"
 )
 
 type Info struct {
-	Protocol int    `json:"protocol"`
-	Version  string `json:"version"`
-	OS       string `json:"os"`
-	Arch     string `json:"arch"`
+	Protocol     int      `json:"protocol"`
+	Version      string   `json:"version"`
+	OS           string   `json:"os"`
+	Arch         string   `json:"arch"`
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 // Quote keeps remote arguments literal under a POSIX login shell.
@@ -66,6 +69,9 @@ func Inspect(ctx context.Context, target config.Target, logs io.Writer) (Info, e
 	if info.Protocol != engine.Protocol {
 		return info, fmt.Errorf("remote protocol %d differs from local protocol %d", info.Protocol, engine.Protocol)
 	}
+	if target.PrestaShop != nil && target.PrestaShop.Upgrade && !slices.Contains(info.Capabilities, lifecycle.Capability) {
+		return info, fmt.Errorf("remote receiver does not support PrestaShop 1.6 finalization; update the remote presto binary")
+	}
 	return info, nil
 }
 
@@ -94,6 +100,16 @@ func Deploy(ctx context.Context, target config.Target, snapshot *engine.Snapshot
 		return result, err
 	}
 	args := []string{"receive", "--root", target.Root}
+	if target.PrestaShop != nil && target.PrestaShop.Upgrade {
+		if err := target.PrestaShop.Validate(); err != nil {
+			return result, err
+		}
+		data, err := json.Marshal(target.PrestaShop)
+		if err != nil {
+			return result, err
+		}
+		args = append(args, "--prestashop-json", string(data))
+	}
 	if dryRun {
 		args = append(args, "--dry-run")
 	}
@@ -104,6 +120,8 @@ func Deploy(ctx context.Context, target config.Target, snapshot *engine.Snapshot
 	cmd.Stdin, cmd.Stderr = archive, logs
 	out, err := cmd.Output()
 	if err != nil {
+		// A failed finalizer returns structured state as well as a nonzero exit.
+		_ = json.Unmarshal(out, &result)
 		return result, fmt.Errorf("remote deployment failed: %w (inspect destination before retrying if transfer was interrupted)", err)
 	}
 	if err := json.Unmarshal(out, &result); err != nil {

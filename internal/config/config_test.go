@@ -88,3 +88,37 @@ func TestExpandHomeAndGlobalOverride(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestPrestaShopTargetValidation(t *testing.T) {
+	for _, settings := range []string{
+		"upgrade=true",
+		"upgrade=true\nshop_context='shop'",
+		"upgrade=true\nshop_context='shop'\nshop_id=-1",
+		"upgrade=true\nshop_context='all'\nshop_id=1",
+		"upgrade=true\nshop_context='group'\nshop_group_id=0",
+		"upgrade=true\nshop_context='group'\nshop_group_id=1\nshop_id=1",
+		"upgrade=true\nshop_context='all'\nphp=['']",
+		"upgrade=true\nshop_context='all'\nphp=[]",
+		"upgrade=true\nshop_context='implicit'",
+		"upgrade=true\nshop_context='all'\non_error='ignore'",
+	} {
+		t.Run(settings, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "config.toml")
+			write(t, file, "[targets.local]\ntype='local'\nroot='shop'\n[targets.local.prestashop]\n"+settings)
+			if _, err := Load(file, "", true); err == nil {
+				t.Fatalf("accepted invalid lifecycle settings: %s", settings)
+			}
+		})
+	}
+	for _, settings := range []string{"upgrade=false", "upgrade=true\nshop_context='all'", "upgrade=true\nshop_context='shop'\nshop_id=2", "upgrade=true\nshop_context='group'\nshop_group_id=1"} {
+		file := filepath.Join(t.TempDir(), "config.toml")
+		write(t, file, "[targets.local]\ntype='local'\nroot='shop'\n[targets.local.prestashop]\n"+settings)
+		cfg, err := Load(file, "", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Targets["local"].PrestaShop == nil {
+			t.Fatal("lost lifecycle settings")
+		}
+	}
+}

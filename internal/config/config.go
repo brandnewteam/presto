@@ -31,11 +31,12 @@ type Composer struct {
 }
 
 type Target struct {
-	Type    string   `toml:"type" json:"type"`
-	Root    string   `toml:"root" json:"root"`
-	Host    string   `toml:"host" json:"host,omitempty"`
-	Agent   string   `toml:"agent" json:"agent,omitempty"`
-	SSHArgs []string `toml:"ssh_args" json:"ssh_args,omitempty"`
+	Type       string      `toml:"type" json:"type"`
+	Root       string      `toml:"root" json:"root"`
+	Host       string      `toml:"host" json:"host,omitempty"`
+	Agent      string      `toml:"agent" json:"agent,omitempty"`
+	SSHArgs    []string    `toml:"ssh_args" json:"ssh_args,omitempty"`
+	PrestaShop *PrestaShop `toml:"prestashop" json:"prestashop,omitempty"`
 }
 
 type Config struct {
@@ -143,6 +144,11 @@ func Load(global, project string, explicitGlobal bool) (Config, error) {
 				}
 				if target.Agent == "" {
 					target.Agent = "presto"
+				}
+			}
+			if target.PrestaShop != nil {
+				if err := target.PrestaShop.Validate(); err != nil {
+					return cfg, fmt.Errorf("target %q: %w", name, err)
 				}
 			}
 			cfg.Targets[name] = target
