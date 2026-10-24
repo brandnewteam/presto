@@ -1,0 +1,415 @@
+// Package cli exposes the language-neutral Presto behavior through Cobra.
+package cli
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strings"
+
+	"github.com/spf13/cobra"
+	"presto/internal/config"
+	"presto/internal/engine"
+	"presto/internal/remote"
+)
+
+type options struct {
+	global     string
+	project    string
+	json       bool
+	noComposer bool
+}
+
+func New(version string, stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
+	var opts options
+	root := &cobra.Command{Use: "presto", Short: "Build, sync and deploy PrestaShop modules", Version: version, SilenceUsage: true, SilenceErrors: true}
+	root.SetIn(stdin)
+	root.SetOut(stdout)
+	root.SetErr(stderr)
+	root.PersistentFlags().StringVar(&opts.global, "config", "", "global TOML config (or PRESTO_CONFIG)")
+	root.PersistentFlags().StringVarP(&opts.project, "project", "C", "", "module project directory (default: discover above cwd)")
+	root.PersistentFlags().BoolVar(&opts.json, "json", false, "machine-readable JSON output")
+	root.PersistentFlags().BoolVar(&opts.noComposer, "no-composer", false, "use the current vendor directory without preparing dependencies")
+	root.AddCommand(buildCommand(&opts), syncCommand(&opts, false), syncCommand(&opts, true), targetsCommand(&opts), doctorCommand(&opts), initCommand(&opts))
+	root.AddCommand(&cobra.Command{Use: "receive", Hidden: true, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+		shop, _ := cmd.Flags().GetString("root")
+		dry, _ := cmd.Flags().GetBool("dry-run")
+		if shop == "" {
+			return fmt.Errorf("receive requires --root")
+		}
+		result, err := engine.Receive(cmd.Context(), cmd.InOrStdin(), shop, dry)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(result)
+	}})
+	receive, _, _ := root.Find([]string{"receive"})
+	receive.Flags().String("root", "", "PrestaShop root")
+	receive.Flags().Bool("dry-run", false, "compare without writing module files")
+	agentInfo := &cobra.Command{Use: "agent-info", Hidden: true, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+		shop, _ := cmd.Flags().GetString("root")
+		if shop != "" {
+			if _, err := engine.ShopModule(shop, "prestocheck"); err != nil {
+				return err
+			}
+		}
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(remote.Info{Protocol: engine.Protocol, Version: version, OS: runtime.GOOS, Arch: runtime.GOARCH})
+	}}
+	agentInfo.Flags().String("root", "", "check a PrestaShop root")
+	root.AddCommand(agentInfo)
+	return root
+}
+
+func load(opts *options, requireProject bool) (config.Config, string, error) {
+	global := opts.global
+	var err error
+	if global == "" {
+		global, err = config.GlobalPath()
+	} else {
+		global, err = config.ExpandPath(global, "")
+	}
+	if err != nil {
+		return config.Config{}, "", err
+	}
+	start := opts.project
+	if start == "" {
+		start, err = os.Getwd()
+		if err != nil {
+			return config.Config{}, "", err
+		}
+	}
+	project, projectErr := engine.FindProject(start)
+	if projectErr != nil && (requireProject || opts.project != "") {
+		return config.Config{}, "", projectErr
+	}
+	if project != "" {
+		project, err = filepath.EvalSymlinks(project)
+		if err != nil {
+			return config.Config{}, "", err
+		}
+	}
+	cfg, err := config.Load(global, project, opts.global != "" || os.Getenv("PRESTO_CONFIG") != "")
+	return cfg, project, err
+}
+
+func buildCommand(opts *options) *cobra.Command {
+	var output, version string
+	var noVersion bool
+	cmd := &cobra.Command{Use: "build", Short: "Create a distributable module ZIP", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, project, err := load(opts, true)
+		if err != nil {
+			return err
+		}
+		if version != "" {
+			cfg.Module.Version = version
+		}
+		snapshot, cleanup, err := engine.Prepare(cmd.Context(), project, cfg, opts.noComposer, cmd.ErrOrStderr())
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		prefix := "latest"
+		if !noVersion {
+			if snapshot.Version == "" {
+				return fmt.Errorf("cannot infer a literal $this->version; set module.version, --module-version, or --no-version")
+			}
+			prefix = "v" + snapshot.Version
+		}
+		destination := output
+		if destination == "" {
+			destination = filepath.Join(project, "dist", prefix+"-"+snapshot.Name+".zip")
+		}
+		destination, err = filepath.Abs(destination)
+		if err != nil {
+			return err
+		}
+		if !strings.EqualFold(filepath.Ext(destination), ".zip") {
+			return fmt.Errorf("output must have a .zip extension")
+		}
+		if err := os.MkdirAll(filepath.Dir(destination), 0755); err != nil {
+			return err
+		}
+		file, err := os.CreateTemp(filepath.Dir(destination), ".presto-build-*.zip")
+		if err != nil {
+			return err
+		}
+		defer os.Remove(file.Name())
+		writeErr := engine.WriteArchive(cmd.Context(), snapshot, file, false)
+		if err := file.Chmod(0644); writeErr == nil {
+			writeErr = err
+		}
+		if err := file.Close(); writeErr == nil {
+			writeErr = err
+		}
+		if writeErr != nil {
+			return writeErr
+		}
+		if err := os.Rename(file.Name(), destination); err != nil {
+			return err
+		}
+		if opts.json {
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"archive": destination, "module": snapshot.Name, "version": snapshot.Version, "files": len(snapshot.Files)})
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Built %s (%d files)\n", destination, len(snapshot.Files))
+		return nil
+	}}
+	cmd.Flags().StringVarP(&output, "output", "o", "", "ZIP output path")
+	cmd.Flags().StringVar(&version, "module-version", "", "override the module version")
+	cmd.Flags().BoolVarP(&noVersion, "no-version", "n", false, "write latest-<module>.zip without requiring a version")
+	return cmd
+}
+
+func syncCommand(opts *options, deployment bool) *cobra.Command {
+	name, description := "sync", "Synchronize a module into a local PrestaShop installation"
+	if deployment {
+		name, description = "deploy", "Send one ZIP over SSH and synchronize it with the remote Go receiver"
+	}
+	var dryRun bool
+	cmd := &cobra.Command{Use: name + " <target>", Short: description, Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, project, err := load(opts, true)
+		if err != nil {
+			return err
+		}
+		target, ok := cfg.Targets[args[0]]
+		if !ok {
+			return fmt.Errorf("unknown target %q; run presto targets", args[0])
+		}
+		expected := "local"
+		if deployment {
+			expected = "ssh"
+		}
+		if target.Type != expected {
+			return fmt.Errorf("%s requires a %s target; %q is %s", name, expected, args[0], target.Type)
+		}
+		if !deployment {
+			module := cfg.Module.Name
+			if module == "" {
+				module = filepath.Base(project)
+			}
+			destination, err := engine.ShopModule(target.Root, module)
+			if err != nil {
+				return err
+			}
+			if engine.Overlaps(project, destination) {
+				return fmt.Errorf("project and target overlap; use a separate module repository")
+			}
+		}
+		snapshot, cleanup, err := engine.Prepare(cmd.Context(), project, cfg, opts.noComposer, cmd.ErrOrStderr())
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		var result engine.Result
+		if deployment {
+			result, err = remote.Deploy(cmd.Context(), target, snapshot, dryRun, cmd.ErrOrStderr())
+		} else {
+			result, err = engine.Synchronize(cmd.Context(), snapshot, target.Root, dryRun)
+		}
+		if err != nil {
+			return err
+		}
+		return printResult(cmd, opts.json, args[0], result)
+	}}
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show content changes without modifying the destination")
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) > 0 {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		cfg, _, err := load(opts, false)
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveError
+		}
+		var names []string
+		for targetName, target := range cfg.Targets {
+			if (deployment && target.Type == "ssh") || (!deployment && target.Type == "local") {
+				names = append(names, targetName)
+			}
+		}
+		sort.Strings(names)
+		return names, cobra.ShellCompDirectiveNoFileComp
+	}
+	return cmd
+}
+
+func printResult(cmd *cobra.Command, asJSON bool, target string, result engine.Result) error {
+	if asJSON {
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(result)
+	}
+	verb := "Synchronized"
+	if result.DryRun {
+		verb = "Would synchronize"
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%s %s → %s (%s)\n", verb, result.Module, target, result.Destination)
+	for _, group := range []struct {
+		prefix string
+		paths  []string
+	}{{"+", result.Created}, {"~", result.Updated}, {"-", result.Deleted}} {
+		for _, path := range group.paths {
+			fmt.Fprintf(cmd.OutOrStdout(), "  %s %s\n", group.prefix, path)
+		}
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%d created, %d updated, %d deleted, %d unchanged\n", len(result.Created), len(result.Updated), len(result.Deleted), result.Unchanged)
+	return nil
+}
+
+func targetsCommand(opts *options) *cobra.Command {
+	return &cobra.Command{Use: "targets", Short: "List named targets without connecting to them", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, _, err := load(opts, false)
+		if err != nil {
+			return err
+		}
+		if opts.json {
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(cfg.Targets)
+		}
+		var names []string
+		for name := range cfg.Targets {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		if len(names) == 0 {
+			fmt.Fprintln(cmd.OutOrStdout(), "No targets configured. Run presto init --global.")
+		}
+		for _, name := range names {
+			target := cfg.Targets[name]
+			location := target.Root
+			if target.Type == "ssh" {
+				location = target.Host + ":" + location
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", name, target.Type, location)
+		}
+		return nil
+	}}
+}
+
+func doctorCommand(opts *options) *cobra.Command {
+	return &cobra.Command{Use: "doctor [target]", Short: "Check configuration and tools; optionally check a target", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, project, err := load(opts, false)
+		if err != nil {
+			return err
+		}
+		report := map[string]any{"configs": cfg.Loaded, "project": project, "platform": runtime.GOOS + "/" + runtime.GOARCH, "protocol": engine.Protocol}
+		if executable, err := exec.LookPath(cfg.Composer.Command[0]); err == nil {
+			report["composer"] = executable
+		} else {
+			report["composer"] = "not found (needed only for Composer preparation)"
+		}
+		if executable, err := exec.LookPath("ssh"); err == nil {
+			report["ssh"] = executable
+		} else {
+			report["ssh"] = "not found (needed for deploy)"
+		}
+		if len(args) > 0 {
+			target, ok := cfg.Targets[args[0]]
+			if !ok {
+				return fmt.Errorf("unknown target %q", args[0])
+			}
+			if target.Type == "ssh" {
+				info, err := remote.Inspect(cmd.Context(), target, cmd.ErrOrStderr())
+				if err != nil {
+					return err
+				}
+				report["receiver"] = info
+			} else {
+				destination, err := engine.ShopModule(target.Root, "prestocheck")
+				if err != nil {
+					return err
+				}
+				report["modules"] = filepath.Dir(destination)
+			}
+		}
+		encoder := json.NewEncoder(cmd.OutOrStdout())
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(report)
+	}}
+}
+
+func initCommand(opts *options) *cobra.Command {
+	var global bool
+	cmd := &cobra.Command{Use: "init", Short: "Create an example project or global TOML file without overwriting existing files", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+		var destination, content string
+		if global {
+			destination = opts.global
+			var err error
+			if destination == "" {
+				destination, err = config.GlobalPath()
+			} else {
+				destination, err = config.ExpandPath(destination, "")
+			}
+			if err != nil {
+				return err
+			}
+			content = globalTemplate
+		} else {
+			base := opts.project
+			if base == "" {
+				var err error
+				base, err = os.Getwd()
+				if err != nil {
+					return err
+				}
+			}
+			destination = filepath.Join(base, "presto.toml")
+			content = projectTemplate
+		}
+		if err := os.MkdirAll(filepath.Dir(destination), 0755); err != nil {
+			return err
+		}
+		file, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err != nil {
+			return err
+		}
+		_, writeErr := io.WriteString(file, content)
+		if err := file.Close(); writeErr == nil {
+			writeErr = err
+		}
+		if writeErr != nil {
+			return writeErr
+		}
+		absolute, _ := filepath.Abs(destination)
+		fmt.Fprintln(cmd.OutOrStdout(), "Created", absolute)
+		return nil
+	}}
+	cmd.Flags().BoolVar(&global, "global", false, "create the user config instead of project config")
+	return cmd
+}
+
+const globalTemplate = `schema = 1
+
+# Use the PrestaShop root; Presto appends modules/<module-name>.
+# [targets.local]
+# type = "local"
+# root = "~/Sites/prestashop"
+
+# Install the Linux Presto binary on the server before using deploy.
+# [targets.production]
+# type = "ssh"
+# host = "my-ssh-alias"
+# root = "/var/www/prestashop"
+# agent = "~/.local/bin/presto"
+`
+
+const projectTemplate = `schema = 1
+
+# Usually inferred from the project directory and a literal $this->version.
+# [module]
+# name = "mymodule"
+# version = "1.0.0"
+
+[files]
+exclude = []
+include = []
+# Appends to the default uploads/ preservation rule.
+preserve = []
+
+[composer]
+enabled = true
+scripts = false
+plugins = false
+require_lock = false
+# For legacy PHP: command = ["/path/to/php7.1", "/path/to/composer.phar"]
+`
