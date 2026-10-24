@@ -91,3 +91,14 @@ Results add optional `upgrade` and `error`. `upgrade` includes `status`, `shop_c
 Dry runs show `planned` without invoking PHP or the database. The feature is disabled unless the target explicitly enables it; build archives and ordinary file-only sync/deploy behavior remain unchanged.
 
 The offline test harness in `internal/testshop` contains upgrade methods from PrestaShop 1.6.1.22 under their retained OSL notice and `LICENSES-prestashop.txt`, with JSON-backed replacements for database/HTTP services. The adapter runs against these native methods on host PHP and PHP 7.1. No live shop is required.
+
+
+## Generated PrestaShop module XML
+
+Before archiving, `build` and `deploy` generate the root `config.xml` in the private prepared directory. `sync` does not generate XML. The original module checkout is never changed. A source copy of the XML is replaced in the prepared result. Add/update its SHA-256, size and 0644 mode in the snapshot, sort the file list and include `/config.xml` in the snapshot rules so protocol 1 receivers validate it normally. Preservation cannot be overridden; generating a preserved config.xml is an error. No transport extension is required.
+
+Use the prepared module name/version and the native PrestaShop 1.6 field order and meanings. Text fields use CDATA; displayName/description/author use HTML entities with unescaped ampersands, author_uri/tab use HTML entities, and confirmUninstall remains raw text. XML must be UTF-8 without forbidden control characters. Missing fields use base Module defaults (empty text, need_instance=1, no country restriction); a getContent method sets configurability. Only a single country restriction is serialized, otherwise limited_countries is empty. Optional empty author_uri is omitted.
+
+Metadata comes from static PHP properties/constructor assignments and literal `$this->l()` calls, with per-field overrides under `[module.config_xml]`. Never execute PHP to infer metadata. Unsupported expressions and ambiguous conditional/repeated assignments require an override. Metadata in parent classes is not inferred; modules inheriting it must configure overrides. A version is always required for XML, including when build uses --no-version. Module version discovery uses the same data-only token reader, ignoring comments and quoted code. Localized XML files retain normal file-selection behavior.
+
+XML generation is deterministic and also occurs during deploy dry runs without connecting to a shop database. Archive format and receiver lifecycle settings remain unchanged.

@@ -86,12 +86,24 @@ func TestCLIEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	foundConfigXML := false
 	for _, file := range archive.File {
+		if file.Name == "examplemodule/config.xml" {
+			foundConfigXML = true
+		}
 		if strings.Contains(file.Name, "presto.toml") || strings.Contains(file.Name, "uploads") {
 			t.Fatal("packaged config or runtime data")
 		}
 	}
 	archive.Close()
+	if !foundConfigXML {
+		t.Fatal("distribution archive is missing config.xml")
+	}
+	metadata, err := os.Open(filepath.Join(project, "config.xml"))
+	if err == nil {
+		metadata.Close()
+		t.Fatal("build changed the source checkout")
+	}
 	out, err = invoke("sync", "local", "--dry-run", "--json")
 	if err != nil {
 		t.Fatal(err)
@@ -150,8 +162,14 @@ func TestCLIEndToEnd(t *testing.T) {
 	if err := json.Unmarshal(out, &applied); err != nil {
 		t.Fatal(err)
 	}
-	if len(applied.Created) != 2 || len(applied.Deleted) != 1 {
+	if len(applied.Created) != 3 || len(applied.Deleted) != 1 {
 		t.Fatalf("unexpected deployment: %s", out)
+	}
+	if _, err := os.Stat(filepath.Join(remoteShop, "modules", "examplemodule", "config.xml")); err != nil {
+		t.Fatal("deploy did not generate config.xml:", err)
+	}
+	if _, err := os.Stat(filepath.Join(localShop, "modules", "examplemodule", "config.xml")); !os.IsNotExist(err) {
+		t.Fatal("sync generated config.xml:", err)
 	}
 	data, err := os.ReadFile(filepath.Join(remoteShop, "modules", "examplemodule", "uploads", "live.txt"))
 	if err != nil || string(data) != "runtime" {

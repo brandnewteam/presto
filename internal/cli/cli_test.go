@@ -34,7 +34,7 @@ func TestInitDoesNotOverwriteConfiguration(t *testing.T) {
 	}
 }
 
-func TestDynamicVersionRequiresOverrideOrNoVersion(t *testing.T) {
+func TestDynamicVersionRequiresOverrideForConfigXML(t *testing.T) {
 	base := t.TempDir()
 	project := filepath.Join(base, "examplemodule")
 	if err := os.MkdirAll(filepath.Join(project, "src"), 0755); err != nil {
@@ -52,7 +52,10 @@ func TestDynamicVersionRequiresOverrideOrNoVersion(t *testing.T) {
 	if _, err := execute(t, "build", "--project", project); err == nil {
 		t.Fatal("invented a dynamic version")
 	}
-	if _, err := execute(t, "build", "--project", filepath.Join(project, "src"), "--no-version"); err != nil {
+	if _, err := execute(t, "build", "--project", filepath.Join(project, "src"), "--no-version"); err == nil {
+		t.Fatal("invented a config.xml version with --no-version")
+	}
+	if _, err := execute(t, "build", "--project", filepath.Join(project, "src"), "--no-version", "--module-version", "2.0.0"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(project, "dist", "latest-examplemodule.zip")); err != nil {

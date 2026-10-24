@@ -21,7 +21,6 @@ import (
 )
 
 var moduleName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
-var literalVersion = regexp.MustCompile(`(?m)^\s*\$this->version\s*=\s*['"]([^'"\r\n]+)['"]\s*;`)
 var safeVersion = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
 
 type File struct {
@@ -93,9 +92,9 @@ func Prepare(ctx context.Context, source string, cfg config.Config, noComposer b
 	}
 	version := cfg.Module.Version
 	if version == "" {
-		versions := literalVersion.FindAllSubmatch(main, -1)
-		if len(versions) == 1 {
-			version = string(versions[0][1])
+		properties, _ := phpProperties(string(main), name)
+		if property, exists := properties["version"]; exists && !property.conditional {
+			version, _ = phpString(property.tokens)
 		}
 	}
 	if version != "" && !safeVersion.MatchString(version) {

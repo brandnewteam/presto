@@ -12,8 +12,9 @@ import (
 )
 
 type Module struct {
-	Name    string `toml:"name"`
-	Version string `toml:"version"`
+	Name      string    `toml:"name"`
+	Version   string    `toml:"version"`
+	ConfigXML ModuleXML `toml:"config_xml"`
 }
 
 type Files struct {
@@ -108,6 +109,7 @@ func Load(global, project string, explicitGlobal bool) (Config, error) {
 		if layer.Module.Version != "" {
 			cfg.Module.Version = layer.Module.Version
 		}
+		cfg.Module.ConfigXML = cfg.Module.ConfigXML.merge(layer.Module.ConfigXML)
 		cfg.Files.Exclude = append(cfg.Files.Exclude, layer.Files.Exclude...)
 		cfg.Files.Include = append(cfg.Files.Include, layer.Files.Include...)
 		cfg.Files.Preserve = append(cfg.Files.Preserve, layer.Files.Preserve...)

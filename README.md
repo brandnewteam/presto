@@ -94,7 +94,7 @@ root = 'C:\dev\prestashop'
 
 ## Module configuration
 
-From a module repository, optionally run `presto init`. Usually, the module name comes from the directory and the version from a literal `$this->version = '1.2.3';` assignment in `<module>.php`. PHP source is never executed to discover metadata. Repositories named differently from their module need an explicit name:
+From a module repository, optionally run `presto init`. Usually, the module name comes from the directory and the version from a literal `$this->version = '1.2.3';` assignment in `<module>.php`. PHP source is never executed to discover metadata; dynamic metadata can be supplied through TOML. Repositories named differently from their module need an explicit name:
 
 ```toml
 schema = 1
@@ -121,6 +121,34 @@ Configuration loads in this order: built-in defaults → global config → `pres
 Local target paths are relative to the configuration file defining them. A leading `~/` expands to the local home directory. Remote roots are interpreted on the receiver; prefer absolute paths or `~/`. Arbitrary environment-variable interpolation and shell expansion are not supported. File patterns always use `/`, including on Windows.
 
 Commands discover `presto.toml` above the current directory, or a parent containing a PHP entry point matching its directory name. Use `--project /path/to/module` (`-C`) to work from elsewhere.
+
+## Generated module metadata
+
+`build` and `deploy` generate a fresh English `config.xml` in the prepared temporary copy. The module checkout is never modified. `sync` does not generate it and keeps its existing file rules. A deploy dry run still prepares the XML but does not modify the destination.
+
+The XML uses PrestaShop 1.6's metadata layout: module name, version, display name, description, author, optional author URI and uninstall confirmation, tab, configurability, instance requirement and country restriction. Text uses CDATA and the native HTML-entity conventions. A single limited country is serialized; multiple restrictions produce an empty `limited_countries`, matching the native 1.6 generator.
+
+Presto reads literal class defaults and constructor assignments, including `$this->l('literal text')`, without executing module PHP. Comments, other classes and quoted code are ignored. Absent fields use the base Module defaults (`need_instance = true`, empty text/country restriction); `getContent()` implies configurability. Dynamic expressions, conditional/repeated assignments, or inherited metadata outside the entry-point class need explicit overrides:
+
+```toml
+[module]
+version = "1.2.3" # Required here only when PHP computes the version dynamically.
+
+[module.config_xml]
+display_name = "Example module"
+description = "An example module description."
+author = "Example author"
+# author_uri = "https://example.com"
+# tab = "front_office_features"
+# confirm_uninstall = "Remove this module?"
+# is_configurable = true
+# need_instance = false
+# limited_countries = ["FR"]
+```
+
+Each override is optional and merges across configuration layers by the last explicit value. A module with inherited metadata should declare those values here. A dynamic module version must be supplied with `module.version` or `build --module-version`; `--no-version` changes only the ZIP filename and does not remove the XML's version requirement.
+
+The generated root `config.xml` replaces any selected source copy and is explicitly included in build/deploy manifests despite the default exclusion. Preservation rules still win: preserving `config.xml` is an error for build/deploy. Existing localized `config_<language>.xml` files retain the normal selection rules; Presto does not generate translations.
 
 ## File rules
 
@@ -201,7 +229,7 @@ presto build --no-version
 presto build --module-version 3.2.1 --output /tmp/module.zip
 ```
 
-Default output is `dist/v<version>-<module>.zip`, or `dist/latest-<module>.zip` with `--no-version` (`-n`). ZIP entries live under `<module>/`, use stable ordering/timestamps, and contain no deployment metadata. Identical prepared inputs produce identical ZIP bytes. Existing output is replaced only after the new ZIP has been written successfully.
+Default output is `dist/v<version>-<module>.zip`, or `dist/latest-<module>.zip` with `--no-version` (`-n`). ZIP entries live under `<module>/`, include the generated `config.xml`, use stable ordering/timestamps, and contain no deployment transport metadata. Identical prepared inputs produce identical ZIP bytes. Existing output is replaced only after the new ZIP has been written successfully.
 
 ## Remote receiver setup
 

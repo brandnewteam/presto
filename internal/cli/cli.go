@@ -136,10 +136,10 @@ func buildCommand(opts *options) *cobra.Command {
 		}
 		defer cleanup()
 		prefix := "latest"
+		if err := engine.AddConfigXML(snapshot, cfg.Module.ConfigXML); err != nil {
+			return err
+		}
 		if !noVersion {
-			if snapshot.Version == "" {
-				return fmt.Errorf("cannot infer a literal $this->version; set module.version, --module-version, or --no-version")
-			}
 			prefix = "v" + snapshot.Version
 		}
 		destination := output
@@ -182,7 +182,7 @@ func buildCommand(opts *options) *cobra.Command {
 	}}
 	cmd.Flags().StringVarP(&output, "output", "o", "", "ZIP output path")
 	cmd.Flags().StringVar(&version, "module-version", "", "override the module version")
-	cmd.Flags().BoolVarP(&noVersion, "no-version", "n", false, "write latest-<module>.zip without requiring a version")
+	cmd.Flags().BoolVarP(&noVersion, "no-version", "n", false, "write latest-<module>.zip (config.xml still requires a module version)")
 	return cmd
 }
 
@@ -228,6 +228,9 @@ func syncCommand(opts *options, deployment bool) *cobra.Command {
 		defer cleanup()
 		var result engine.Result
 		if deployment {
+			if err := engine.AddConfigXML(snapshot, cfg.Module.ConfigXML); err != nil {
+				return err
+			}
 			result, err = remote.Deploy(cmd.Context(), target, snapshot, dryRun, cmd.ErrOrStderr())
 		} else {
 			result, err = engine.Synchronize(cmd.Context(), snapshot, target.Root, dryRun, engine.SyncOptions{PrestaShop: target.PrestaShop, Logs: cmd.ErrOrStderr()})
@@ -430,6 +433,11 @@ const projectTemplate = `schema = 1
 # [module]
 # name = "mymodule"
 # version = "1.0.0"
+
+# Optional overrides for build/deploy config.xml metadata.
+# [module.config_xml]
+# display_name = "Example module"
+# author = "Example author"
 
 [files]
 exclude = []

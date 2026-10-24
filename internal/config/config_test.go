@@ -122,3 +122,24 @@ func TestPrestaShopTargetValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestModuleXMLOverridesMergeAcrossLayers(t *testing.T) {
+	base := t.TempDir()
+	global := filepath.Join(base, "global.toml")
+	project := filepath.Join(base, "project")
+	write(t, global, "[module.config_xml]\ndisplay_name='Example'\nauthor='Example author'\nneed_instance=true\n")
+	write(t, filepath.Join(project, "presto.toml"), "[module.config_xml]\ndescription='Description'\nneed_instance=false\n")
+	write(t, filepath.Join(project, "presto.local.toml"), "[module.config_xml]\nauthor=''\nlimited_countries=['FR']\n")
+	cfg, err := Load(global, project, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := cfg.Module.ConfigXML
+	if m.DisplayName == nil || *m.DisplayName != "Example" || m.Author == nil || *m.Author != "" || m.Description == nil || *m.Description != "Description" || m.NeedInstance == nil || *m.NeedInstance || m.LimitedCountries == nil || len(*m.LimitedCountries) != 1 {
+		t.Fatalf("%+v", m)
+	}
+	write(t, global, "[module.config_xml]\ndisplay_nmae='Typo'\n")
+	if _, err := Load(global, "", true); err == nil {
+		t.Fatal("accepted unknown XML metadata setting")
+	}
+}
