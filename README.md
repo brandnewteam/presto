@@ -31,6 +31,8 @@ GOBIN="$HOME/.local/bin" go install github.com/brandnewteam/presto@latest
 
 Ensure `~/.local/bin` is on your PATH when using this location.
 
+`presto --version` and receiver metadata use the module version embedded by Go, including release tags and revision-based pseudo-versions, without the leading `v`. The release builder can override this value. Builds without a module version report `dev`.
+
 To build from a local checkout instead:
 
 ```sh
