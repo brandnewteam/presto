@@ -12,11 +12,11 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/brandnewteam/presto/internal/config"
+	"github.com/brandnewteam/presto/internal/engine"
+	"github.com/brandnewteam/presto/internal/lifecycle"
+	"github.com/brandnewteam/presto/internal/remote"
 	"github.com/spf13/cobra"
-	"presto/internal/config"
-	"presto/internal/engine"
-	"presto/internal/lifecycle"
-	"presto/internal/remote"
 )
 
 type options struct {

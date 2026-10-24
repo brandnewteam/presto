@@ -14,7 +14,7 @@ import (
 	"time"
 	"unicode"
 
-	"presto/internal/config"
+	"github.com/brandnewteam/presto/internal/config"
 )
 
 const Protocol = 1

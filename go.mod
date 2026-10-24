@@ -1,4 +1,4 @@
-module presto
+module github.com/brandnewteam/presto
 
 go 1.24.0
 

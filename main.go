@@ -6,7 +6,7 @@ import (
 	"os"
 	"os/signal"
 
-	"presto/internal/cli"
+	"github.com/brandnewteam/presto/internal/cli"
 )
 
 // version is replaced by the release builder.

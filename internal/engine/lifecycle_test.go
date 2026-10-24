@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"presto/internal/config"
-	"presto/internal/testshop"
+	"github.com/brandnewteam/presto/internal/config"
+	"github.com/brandnewteam/presto/internal/testshop"
 )
 
 func lifecycleSnapshot(t *testing.T, constructor, secondScript string) *Snapshot {

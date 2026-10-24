@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/bmatcuk/doublestar/v4"
-	"presto/internal/config"
+	"github.com/brandnewteam/presto/internal/config"
 )
 
 type Rules struct {

@@ -10,9 +10,9 @@ import (
 	"os/exec"
 	"strings"
 
-	"presto/internal/config"
-	"presto/internal/engine"
-	"presto/internal/lifecycle"
+	"github.com/brandnewteam/presto/internal/config"
+	"github.com/brandnewteam/presto/internal/engine"
+	"github.com/brandnewteam/presto/internal/lifecycle"
 	"slices"
 )
 

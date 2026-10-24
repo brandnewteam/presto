@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"presto/internal/config"
+	"github.com/brandnewteam/presto/internal/config"
 )
 
 const Capability = "prestashop16-upgrade-v1"

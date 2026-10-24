@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"presto/internal/engine"
-	"presto/internal/testshop"
+	"github.com/brandnewteam/presto/internal/engine"
+	"github.com/brandnewteam/presto/internal/testshop"
 )
 
 func TestCLIEndToEnd(t *testing.T) {

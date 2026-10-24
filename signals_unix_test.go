@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"presto/internal/engine"
-	"presto/internal/testshop"
+	"github.com/brandnewteam/presto/internal/engine"
+	"github.com/brandnewteam/presto/internal/testshop"
 )
 
 func TestSIGTERMDuringUpgradeStillDisablesModule(t *testing.T) {

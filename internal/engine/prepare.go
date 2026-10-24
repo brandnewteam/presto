@@ -17,7 +17,7 @@ import (
 	"sort"
 	"strings"
 
-	"presto/internal/config"
+	"github.com/brandnewteam/presto/internal/config"
 )
 
 var moduleName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)

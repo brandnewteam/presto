@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"presto/internal/config"
+	"github.com/brandnewteam/presto/internal/config"
 )
 
 func put(t *testing.T, root, name, content string) {

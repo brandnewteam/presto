@@ -14,7 +14,24 @@ presto deploy production
 
 ## Install
 
-Build locally with Go 1.24 or newer:
+Install or update directly from GitHub with Go 1.24 or newer:
+
+```sh
+go install github.com/brandnewteam/presto@latest
+```
+
+Go installs the executable into `GOBIN` when set, otherwise into `$(go env GOPATH)/bin` (usually `~/go/bin`). Add that directory to your PATH, then run `presto --help`. Repeat the install command to update, or replace `@latest` with a published version tag to select a specific release.
+
+On macOS or Linux, you can choose a different installation directory:
+
+```sh
+mkdir -p "$HOME/.local/bin"
+GOBIN="$HOME/.local/bin" go install github.com/brandnewteam/presto@latest
+```
+
+Ensure `~/.local/bin` is on your PATH when using this location.
+
+To build from a local checkout instead:
 
 ```sh
 go build -o bin/presto .

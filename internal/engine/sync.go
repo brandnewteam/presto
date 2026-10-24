@@ -11,9 +11,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/brandnewteam/presto/internal/config"
+	"github.com/brandnewteam/presto/internal/lifecycle"
 	"io"
-	"presto/internal/config"
-	"presto/internal/lifecycle"
 )
 
 type Result struct {
