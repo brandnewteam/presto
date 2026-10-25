@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -149,6 +150,48 @@ func TestExclusionDoesNotProtectDestinationAndIncludeOverridesExclusion(t *testi
 		if _, err := os.Stat(filepath.Join(destination, filepath.FromSlash(name))); !os.IsNotExist(err) {
 			t.Fatalf("unexpected file %s", name)
 		}
+	}
+}
+
+func TestDirectoryPatternsDoNotMatchFiles(t *testing.T) {
+	rules := Rules{Exclude: []string{"dist/", "/cache/", "views/**"}, Preserve: []string{"uploads/"}}
+	for name, want := range map[string]bool{
+		"dist": true, "lib/dist": true, "dist/app.js": false, "lib/dist/app.js": false,
+		"cache": true, "cache/x": false, "views": true, "views/a.tpl": false,
+		"uploads": true, "uploads/file.jpg": false,
+	} {
+		if got := rules.Selected(name); got != want {
+			t.Errorf("Selected(%q) = %v, want %v", name, got, want)
+		}
+	}
+	for _, name := range []string{"dist", "cache", "views", "uploads"} {
+		if rules.SelectedDir(name) {
+			t.Errorf("SelectedDir(%q) selected an excluded directory", name)
+		}
+	}
+	if rules.Preserved("uploads") || !rules.PreservedDir("uploads") || !rules.Preserved("uploads/a.jpg") {
+		t.Error("preservation must follow directory-only matching")
+	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+	// A shared uploads/ symlink at the destination stays preserved, as before.
+	source, shop := moduleFixture(t), shopFixture(t)
+	put(t, source, "dist", "a file, not the dist/ directory")
+	if err := os.Symlink(t.TempDir(), filepath.Join(source, "node_modules")); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(shop, "modules", "examplemodule")
+	put(t, destination, "examplemodule.php", "old")
+	if err := os.Symlink(t.TempDir(), filepath.Join(destination, "uploads")); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Synchronize(context.Background(), prepareFixture(t, source, config.Defaults()), shop, false)
+	if err != nil || !slices.Contains(result.Created, "dist") {
+		t.Fatalf("%+v %v", result, err)
+	}
+	if _, err := os.Lstat(filepath.Join(destination, "uploads")); err != nil {
+		t.Fatal("removed preserved uploads symlink")
 	}
 }
 

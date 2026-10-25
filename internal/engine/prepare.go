@@ -138,7 +138,7 @@ func Prepare(ctx context.Context, source string, cfg config.Config, noComposer b
 		if !validPath(vendorDir) || !validPath(binDir) {
 			return fail(fmt.Errorf("Composer vendor-dir and bin-dir must be relative paths within the module"))
 		}
-		if !rules.Selected(vendorDir) {
+		if !rules.SelectedDir(vendorDir) {
 			return fail(fmt.Errorf("file rules exclude Composer vendor directory %q", vendorDir))
 		}
 	}
@@ -168,13 +168,15 @@ func Prepare(ctx context.Context, source string, cfg config.Config, noComposer b
 			}
 			return nil
 		}
-		selected := rules.Selected(rel)
+		// Symlinks match like directories, as they did before directory-only patterns.
+		dir := entry.IsDir() || entry.Type()&os.ModeSymlink != 0
+		selected := rules.selected(rel, dir)
 		// Composer inputs are copied even when excluded from the eventual package.
 		if useComposer && (rel == "composer.json" || rel == "composer.lock") {
 			selected = true
 		}
 		if !selected {
-			if entry.IsDir() && (rules.Preserved(rel) || reserved(rel) || len(rules.Include) == 0) {
+			if entry.IsDir() && (rules.PreservedDir(rel) || reserved(rel) || len(rules.Include) == 0) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -245,8 +247,8 @@ func Prepare(ctx context.Context, source string, cfg config.Config, noComposer b
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		if !rules.Selected(rel) {
-			if entry.IsDir() && (rules.Preserved(rel) || len(rules.Include) == 0) {
+		if !rules.selected(rel, entry.IsDir() || entry.Type()&os.ModeSymlink != 0) {
+			if entry.IsDir() && (rules.PreservedDir(rel) || len(rules.Include) == 0) {
 				return filepath.SkipDir
 			}
 			return nil

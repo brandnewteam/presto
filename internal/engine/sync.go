@@ -147,7 +147,8 @@ func Synchronize(ctx context.Context, snapshot *Snapshot, shopRoot string, dryRu
 				return err
 			}
 			rel = filepath.ToSlash(rel)
-			if snapshot.Rules.Preserved(rel) {
+			// Preserved symlinks, such as a shared uploads/ link, match like directories.
+			if anyMatch(snapshot.Rules.Preserve, rel, entry.IsDir() || entry.Type()&os.ModeSymlink != 0) {
 				if entry.IsDir() {
 					return filepath.SkipDir
 				}

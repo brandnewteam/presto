@@ -17,7 +17,7 @@ This is the compatibility surface for a future Python implementation. Implementa
 ## File semantics
 
 1. Resolve and validate module name (`[a-z][a-z0-9_]*`) and its `<name>.php` entry point.
-2. Select the working tree with exclusions, inclusion overrides, and highest-priority preservation rules. Omit Presto configuration/transport metadata unconditionally. Never follow selected symlinks.
+2. Select the working tree with exclusions, inclusion overrides, and highest-priority preservation rules. A pattern ending in `/` or `/**` matches only directories (and symlinks) and their descendants, never a regular file of that name. Omit Presto configuration/transport metadata unconditionally. Never follow selected symlinks.
 3. Prepare production dependencies in an isolated copy when enabled. Snapshot selected regular files with relative `/` paths, SHA-256, size, and normalized mode (0644 or 0755).
 4. Inspect destination regular files, skipping preserved subtrees. Reject symlinks outside preservation rules, special files, file/directory conflicts, and destination/source case mismatches before changing module contents.
 5. Create missing source files. Update files with different hashes or, on POSIX, different modes. Timestamps are irrelevant. Remove destination files absent from the selected source. Preserve rules protect destination data independently from exclusions.
