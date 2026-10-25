@@ -223,7 +223,7 @@ Use your actual IDs. Invalid/mixed/missing context settings fail before synchron
 
 With finalization enabled, the module lock covers the whole sequence:
 
-1. Validate the archive/file plan and lint **all selected PHP files using the target PHP runtime** before replacing module files.
+1. Validate the archive/file plan and lint **the module's selected PHP files using the target PHP runtime** before replacing module files. Files in the Composer vendor directory (`config.vendor-dir` of the prepared `composer.json`, otherwise `vendor/`) are skipped: Composer already resolved them for the platform, and packages such as Symfony polyfills ship `bootstrap80.php` files that only newer PHP versions load or can parse. Several lint processes run in parallel; the first failure in path order is reported.
 2. Bootstrap PrestaShop and inspect the installed module record and selected shop context, without constructing the old module class. Reject unsupported PrestaShop versions, invalid shop IDs, and known downgrades before copying.
 3. Copy/update/delete module files using the normal preservation rules.
 4. Instantiate only the deployed module and call native `Module::initUpgradeModule()` / `runUpgradeModule()`. Run scripts in native version order. If no upgrade scripts exist, use the native version-registration path. After successful scripts, finish registering the package version without rerunning applied scripts.

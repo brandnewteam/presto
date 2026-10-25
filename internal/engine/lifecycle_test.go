@@ -163,6 +163,28 @@ func TestLifecyclePreflightStopsBeforeFileChanges(t *testing.T) {
 	}
 }
 
+func TestLifecycleLintSkipsComposerVendor(t *testing.T) {
+	for _, vendor := range []string{"vendor", "lib/deps"} {
+		t.Run(vendor, func(t *testing.T) {
+			shop := testshop.Create(t)
+			source := filepath.Join(t.TempDir(), "examplemodule")
+			put(t, source, "examplemodule.php", testshop.Module("1.3.0", ""))
+			if vendor != "vendor" {
+				put(t, source, "composer.json", `{"config": {"vendor-dir": "./`+vendor+`"}}`)
+			}
+			// Like Symfony's bootstrap80.php: valid only for runtimes that will load it.
+			put(t, source, vendor+"/symfony/polyfill/bootstrap99.php", "<?php\nfunction future( {\n")
+			cfg := config.Defaults()
+			disabled := false
+			cfg.Composer.Enabled = &disabled
+			result, err := Synchronize(context.Background(), prepareFixture(t, source, cfg), shop, false, upgradeOptions(t, "all"))
+			if err != nil || result.Upgrade.Status != "upgraded" {
+				t.Fatalf("vendor lint blocked the upgrade: %+v %v", result.Upgrade, err)
+			}
+		})
+	}
+}
+
 func TestLifecycleDryRunDoesNotExecutePHP(t *testing.T) {
 	shop := testshop.Create(t)
 	snapshot := lifecycleSnapshot(t, "", "return false;")

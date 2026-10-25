@@ -9,8 +9,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/brandnewteam/presto/internal/config"
@@ -85,24 +88,14 @@ func New(settings config.PrestaShop, root, module, version string, logs io.Write
 
 func (r *Runner) Close() { _ = os.RemoveAll(r.workspace) }
 
-// Preflight lints selected PHP and inspects installed state without loading the old module class.
+// Preflight lints the module's own PHP and inspects installed state without loading the old module class.
 func (r *Runner) Preflight(ctx context.Context, snapshotRoot string, files []string) (*Result, error) {
 	planned := Planned(r.settings)
 	planned.Status = "preflight_failed"
-	command := r.settings.Command()
-	for _, name := range files {
-		if !strings.EqualFold(filepath.Ext(name), ".php") {
-			continue
-		}
-		args := append(append([]string{}, command[1:]...), "-l", filepath.Join(snapshotRoot, filepath.FromSlash(name)))
-		cmd := exec.CommandContext(ctx, command[0], args...)
-		// Successful lint output is noisy; only replay its diagnostic on failure.
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			fmt.Fprint(r.logs, string(output))
-			planned.Error = fmt.Sprintf("PHP lint failed for %s: %v", name, err)
-			return planned, fmt.Errorf("PHP lint failed for %s: %w", name, err)
-		}
+	if name, output, err := r.lint(ctx, snapshotRoot, files); err != nil {
+		fmt.Fprint(r.logs, output)
+		planned.Error = fmt.Sprintf("PHP lint failed for %s: %v", name, err)
+		return planned, fmt.Errorf("PHP lint failed for %s: %w", name, err)
 	}
 	result, err := r.call(ctx, "inspect")
 	if err != nil {
@@ -150,6 +143,71 @@ func (r *Runner) Finalize(ctx context.Context) (*Result, error) {
 		return result, fmt.Errorf("module upgrade failed: %w; deactivation could not be confirmed", err)
 	}
 	return result, fmt.Errorf("module upgrade failed: %w; module disabled in shop IDs %v", err, result.ShopIDs)
+}
+
+// lint checks PHP files with the target runtime, several processes at a time, and
+// reports the first failure in path order. Composer resolved the vendor directory for
+// the platform already; packages such as Symfony polyfills ship files for newer PHP
+// versions that are only loaded there, so linting them would reject valid packages.
+func (r *Runner) lint(ctx context.Context, snapshotRoot string, files []string) (string, string, error) {
+	vendor := composerVendorDir(snapshotRoot)
+	var names []string
+	for _, name := range files {
+		if strings.EqualFold(path.Ext(name), ".php") && name != vendor && !strings.HasPrefix(name, vendor+"/") {
+			names = append(names, name)
+		}
+	}
+	type failure struct {
+		output string
+		err    error
+	}
+	failures := make([]*failure, len(names))
+	indexes := make(chan int)
+	var wait sync.WaitGroup
+	command := r.settings.Command()
+	for worker := 0; worker < min(runtime.NumCPU(), 8, len(names)); worker++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for i := range indexes {
+				args := append(append([]string{}, command[1:]...), "-l", filepath.Join(snapshotRoot, filepath.FromSlash(names[i])))
+				// Successful lint output is noisy; only replay its diagnostic on failure.
+				if output, err := exec.CommandContext(ctx, command[0], args...).CombinedOutput(); err != nil {
+					failures[i] = &failure{string(output), err}
+				}
+			}
+		}()
+	}
+	for i := range names {
+		if ctx.Err() != nil {
+			break
+		}
+		indexes <- i
+	}
+	close(indexes)
+	wait.Wait()
+	if err := ctx.Err(); err != nil {
+		return "", "", err
+	}
+	for i, failure := range failures {
+		if failure != nil {
+			return names[i], failure.output, failure.err
+		}
+	}
+	return "", "", nil
+}
+
+// composerVendorDir reads vendor-dir from the prepared composer.json, as Composer does.
+func composerVendorDir(root string) string {
+	var settings struct {
+		Config struct {
+			VendorDir string `json:"vendor-dir"`
+		} `json:"config"`
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "composer.json")); err == nil && json.Unmarshal(data, &settings) == nil && settings.Config.VendorDir != "" {
+		return strings.Trim(path.Clean(filepath.ToSlash(settings.Config.VendorDir)), "/")
+	}
+	return "vendor"
 }
 
 func (r *Runner) call(ctx context.Context, operation string) (*Result, error) {
