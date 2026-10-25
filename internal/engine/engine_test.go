@@ -409,6 +409,9 @@ func TestComposerProcess(t *testing.T) {
 	if mode == "fail" {
 		os.Exit(7)
 	}
+	if manifest, err := os.ReadFile("composer.json"); err != nil || !strings.Contains(string(manifest), `"autoloader-suffix"`) {
+		os.Exit(13)
+	}
 	if _, err := os.Stat("vendor/dev/unsafe.php"); !os.IsNotExist(err) {
 		os.Exit(9)
 	}
@@ -438,6 +441,9 @@ func TestComposerIsolationAndFailure(t *testing.T) {
 	}
 	if got := read(t, source, "composer.lock"); got != "original lock" {
 		t.Fatal("source lock changed")
+	}
+	if got := read(t, snapshot.Root, "composer.json"); got != "{}" {
+		t.Fatalf("pinned autoloader suffix leaked into the package: %s", got)
 	}
 	if got := read(t, source, "vendor/dev/unsafe.php"); got != "dev dependency" {
 		t.Fatal("source vendor changed")

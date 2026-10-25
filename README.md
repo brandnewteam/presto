@@ -41,7 +41,7 @@ go build -o bin/presto .
 ./bin/presto --help
 ```
 
-Put the executable in a directory on your PATH. A prebuilt executable requires no Go installation, Bash, Python, rsync, zip, or unzip. Composer/PHP are needed locally only when preparing Composer dependencies. Remote deployment additionally needs local OpenSSH and a matching remote Presto receiver. Targets opting into native module upgrades also need a compatible PHP CLI on the target machine.
+Put the executable in a directory on your PATH. A prebuilt executable requires no Go installation, Bash, Python, rsync, zip, or unzip. Composer/PHP (or Docker with a Composer image) are needed locally only when preparing Composer dependencies. Remote deployment additionally needs local OpenSSH and a matching remote Presto receiver. Targets opting into native module upgrades also need a compatible PHP CLI on the target machine.
 
 The release builder uses Go rather than a shell script:
 
@@ -190,7 +190,25 @@ All three operations prepare dependencies by default when `composer.json` exists
 2. Run `composer install --no-dev --prefer-dist --optimize-autoloader --no-interaction --no-progress --no-scripts --no-plugins` there.
 3. Package/sync that prepared result, including production dependencies and autoload files.
 
-The checkout's lock file and vendor tree remain untouched. Existing vendor/bin directories are not copied into preparation; relative custom Composer vendor/bin directories are supported. Composer file/vendor/bin environment variables are scoped to the temporary copy. The configured command is an argument array, never a shell expression. The standard Windows `composer.bat` installation is handled by invoking its adjacent `composer.phar` with PHP directly; custom launchers can use `command = ['php', 'C:/path/to/composer.phar']`. Package requirements are respected; for PHP 7 modules, configure a compatible PHP/Composer executable rather than silently ignoring platform requirements.
+The checkout's lock file and vendor tree remain untouched. Existing vendor/bin directories are not copied into preparation; relative custom Composer vendor/bin directories are supported. Composer file/vendor/bin environment variables are scoped to the temporary copy. The configured command is an argument array, never a shell expression. The standard Windows `composer.bat` installation is handled by invoking its adjacent `composer.phar` with PHP directly; custom launchers can use `command = ['php', 'C:/path/to/composer.phar']`. Package requirements are respected; for PHP 7 modules, configure a compatible PHP/Composer executable or Docker image rather than silently ignoring platform requirements.
+
+With Composer 2.2, the last release that runs on PHP 7.1, every fresh install picks a random autoloader class suffix. Unless `composer.json` sets `config.autoloader-suffix`, Presto pins one derived from the module name and lock file in the temporary copy, so repeated syncs do not rewrite `vendor/autoload.php` and builds stay reproducible. The packaged `composer.json` is the original.
+
+### Composer in Docker
+
+To avoid installing old PHP versions locally, run Composer in an image that has the module's PHP version, Composer and the zip extension or `unzip`:
+
+```sh
+docker build -t presto-composer:php7.1 -f examples/composer-php71.Dockerfile examples
+```
+
+```toml
+[composer]
+docker_image = "presto-composer:php7.1"
+# docker_args = ["--platform", "linux/amd64"] # For example, for an amd64-only image.
+```
+
+This can live in the global configuration and be disabled per module with `docker_image = ""`. `command` (default `["composer"]`) then runs inside the container with the same install flags. Presto runs `docker run --rm --init`, mounting only the private temporary copy at `/presto/work` and a persistent Composer cache from the user cache directory (for example `~/Library/Caches/presto/docker`) at `/presto/cache`. The temporary copy is created below that cache directory so Docker VMs that share only the home directory (such as Colima) can mount it. On macOS/Linux the container runs with your user and group IDs. `COMPOSER_AUTH` is forwarded when set; host `auth.json` files and SSH keys are not available inside the container. `docker_args` are passed before the image name, for example `--platform` or `--network`. Canceling removes the container. `presto doctor` reports the Docker setup.
 
 Set `scripts = true` and/or `plugins = true` only when the module needs them; these enable Composer code execution as usual. A missing lock can be resolved in the temporary directory; set `require_lock = true` for reproducible dependency selection. Relative path repositories must remain resolvable from the temporary layout; external build systems/frontend compilation are not run automatically.
 

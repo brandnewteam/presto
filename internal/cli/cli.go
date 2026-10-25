@@ -345,7 +345,13 @@ func doctorCommand(opts *options) *cobra.Command {
 			return err
 		}
 		report := map[string]any{"configs": cfg.Loaded, "project": project, "platform": runtime.GOOS + "/" + runtime.GOARCH, "protocol": engine.Protocol}
-		if executable, err := exec.LookPath(cfg.Composer.Command[0]); err == nil {
+		if image := cfg.Composer.Docker(); image != "" {
+			if executable, err := exec.LookPath("docker"); err == nil {
+				report["composer"] = fmt.Sprintf("%s in Docker image %s via %s", cfg.Composer.Command[0], image, executable)
+			} else {
+				report["composer"] = "docker not found (needed for composer.docker_image)"
+			}
+		} else if executable, err := exec.LookPath(cfg.Composer.Command[0]); err == nil {
 			report["composer"] = executable
 		} else {
 			report["composer"] = "not found (needed only for Composer preparation)"
@@ -440,6 +446,10 @@ const globalTemplate = `schema = 1
 # type = "local"
 # root = "~/Sites/prestashop"
 
+# Run Composer for every module in an image with the modules' PHP version.
+# [composer]
+# docker_image = "presto-composer:php7.1"
+
 # Install the Linux Presto binary on the server before using deploy.
 # [targets.production]
 # type = "ssh"
@@ -472,4 +482,7 @@ scripts = false
 plugins = false
 require_lock = false
 # For legacy PHP: command = ["/path/to/php7.1", "/path/to/composer.phar"]
+# Or run command inside an image with that PHP and Composer:
+# docker_image = "presto-composer:php7.1"
+# docker_args = ["--platform", "linux/amd64"]
 `

@@ -47,7 +47,7 @@ func TestLayersAndRelativePaths(t *testing.T) {
 }
 
 func TestRejectInvalidConfig(t *testing.T) {
-	for _, content := range []string{"schema=9", "[composer]\nenabeld=true", "[targets.x]\ntype='remote'\nroot='/srv/shop'", "[targets.x]\ntype='ssh'\nhost='-bad'\nroot='/srv/shop'", "[files]\nexclude=['../outside']", "[files]\nexclude=['[']", "[composer]\ncommand=[]"} {
+	for _, content := range []string{"schema=9", "[composer]\nenabeld=true", "[targets.x]\ntype='remote'\nroot='/srv/shop'", "[targets.x]\ntype='ssh'\nhost='-bad'\nroot='/srv/shop'", "[files]\nexclude=['../outside']", "[files]\nexclude=['[']", "[composer]\ncommand=[]", "[composer]\ndocker_image='--privileged'", "[composer]\ndocker_image='a b'"} {
 		t.Run(content, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.toml")
 			write(t, path, content)
@@ -58,6 +58,21 @@ func TestRejectInvalidConfig(t *testing.T) {
 	}
 	if _, err := Load(filepath.Join(t.TempDir(), "absent"), "", true); err == nil {
 		t.Fatal("accepted missing explicit config")
+	}
+}
+
+func TestComposerDockerSettingsMergeAndDisable(t *testing.T) {
+	base := t.TempDir()
+	global := filepath.Join(base, "config.toml")
+	project := filepath.Join(base, "examplemodule")
+	write(t, global, "[composer]\ndocker_image='presto-composer:php7.1'\ndocker_args=['--platform', 'linux/amd64']\n")
+	cfg, err := Load(global, project, true)
+	if err != nil || cfg.Composer.Docker() != "presto-composer:php7.1" || strings.Join(cfg.Composer.DockerArgs, " ") != "--platform linux/amd64" {
+		t.Fatalf("%+v %v", cfg.Composer, err)
+	}
+	write(t, filepath.Join(project, "presto.local.toml"), "[composer]\ndocker_image=''\n")
+	if cfg, err = Load(global, project, true); err != nil || cfg.Composer.Docker() != "" {
+		t.Fatalf("project could not disable Docker: %+v %v", cfg.Composer, err)
 	}
 }
 

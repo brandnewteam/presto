@@ -29,6 +29,17 @@ type Composer struct {
 	Scripts     *bool    `toml:"scripts"`
 	Plugins     *bool    `toml:"plugins"`
 	RequireLock *bool    `toml:"require_lock"`
+	// DockerImage runs Command inside this image instead of on the host; "" disables it.
+	DockerImage *string  `toml:"docker_image"`
+	DockerArgs  []string `toml:"docker_args"`
+}
+
+// Docker reports the image used for Composer preparation, if any.
+func (c Composer) Docker() string {
+	if c.DockerImage == nil {
+		return ""
+	}
+	return *c.DockerImage
 }
 
 type Target struct {
@@ -130,6 +141,20 @@ func Load(global, project string, explicitGlobal bool) (Config, error) {
 				return cfg, fmt.Errorf("config %s: composer.command must contain an executable", path)
 			}
 			cfg.Composer.Command = layer.Composer.Command
+		}
+		if layer.Composer.DockerImage != nil {
+			if image := *layer.Composer.DockerImage; strings.HasPrefix(image, "-") || strings.ContainsAny(image, "\x00\r\n \t") {
+				return cfg, fmt.Errorf("config %s: invalid composer.docker_image %q", path, image)
+			}
+			cfg.Composer.DockerImage = layer.Composer.DockerImage
+		}
+		if layer.Composer.DockerArgs != nil {
+			for _, arg := range layer.Composer.DockerArgs {
+				if strings.ContainsRune(arg, 0) {
+					return cfg, fmt.Errorf("config %s: invalid NUL in composer.docker_args", path)
+				}
+			}
+			cfg.Composer.DockerArgs = layer.Composer.DockerArgs
 		}
 		for name, target := range layer.Targets {
 			if name == "" || (target.Type != "local" && target.Type != "ssh") || target.Root == "" {

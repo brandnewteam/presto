@@ -10,10 +10,8 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strings"
 
@@ -100,7 +98,11 @@ func Prepare(ctx context.Context, source string, cfg config.Config, noComposer b
 	if version != "" && !safeVersion.MatchString(version) {
 		return nil, nil, fmt.Errorf("invalid module version %q", version)
 	}
-	workspace, err := os.MkdirTemp("", "presto-prepare-")
+	useComposer := !noComposer && (cfg.Composer.Enabled == nil || *cfg.Composer.Enabled)
+	if _, err := os.Stat(filepath.Join(source, "composer.json")); err != nil {
+		useComposer = false
+	}
+	workspace, err := workspaceDir(useComposer && cfg.Composer.Docker() != "")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -111,8 +113,6 @@ func Prepare(ctx context.Context, source string, cfg config.Config, noComposer b
 		return fail(err)
 	}
 	rules := NewRules(cfg.Files)
-	_, composerErr := os.Stat(filepath.Join(source, "composer.json"))
-	useComposer := !noComposer && composerErr == nil && (cfg.Composer.Enabled == nil || *cfg.Composer.Enabled)
 	vendorDir, binDir := "vendor", "vendor/bin"
 	if useComposer {
 		var settings struct {
@@ -200,38 +200,29 @@ func Prepare(ctx context.Context, source string, cfg config.Config, noComposer b
 		return fail(err)
 	}
 	if useComposer {
-		args := append([]string{}, cfg.Composer.Command[1:]...)
-		args = append(args, "install", "--no-dev", "--prefer-dist", "--optimize-autoloader", "--no-interaction", "--no-progress")
-		if cfg.Composer.Scripts == nil || !*cfg.Composer.Scripts {
-			args = append(args, "--no-scripts")
+		cmd, err := composerCommand(ctx, cfg.Composer, workspace, name, vendorDir, binDir)
+		if err != nil {
+			return fail(err)
 		}
-		if cfg.Composer.Plugins == nil || !*cfg.Composer.Plugins {
-			args = append(args, "--no-plugins")
+		cmd.Stdout, cmd.Stderr = logs, logs
+		restore, err := pinAutoloaderSuffix(root, name)
+		if err != nil {
+			return fail(err)
 		}
-		executable := cfg.Composer.Command[0]
-		// The standard Windows Composer installer uses a .bat wrapper around a
-		// sibling composer.phar. Invoke PHP directly to keep argument handling shell-free.
-		if runtime.GOOS == "windows" && executable == "composer" {
-			resolved, err := exec.LookPath(executable)
-			if err != nil {
-				return fail(err)
-			}
-			ext := strings.ToLower(filepath.Ext(resolved))
-			if ext == ".bat" || ext == ".cmd" {
-				phar := filepath.Join(filepath.Dir(resolved), "composer.phar")
-				if info, err := os.Stat(phar); err != nil || !info.Mode().IsRegular() {
-					return fail(fmt.Errorf("Windows Composer wrapper has no adjacent composer.phar; configure composer.command = ['php', 'C:/path/to/composer.phar']"))
-				}
-				executable = "php"
-				args = append([]string{phar}, args...)
-			}
+		if image := cfg.Composer.Docker(); image != "" {
+			fmt.Fprintf(logs, "Preparing production Composer dependencies in Docker image %s…\n", image)
+		} else {
+			fmt.Fprintln(logs, "Preparing production Composer dependencies in an isolated directory…")
 		}
-		cmd := exec.CommandContext(ctx, executable, args...)
-		cmd.Dir, cmd.Stdout, cmd.Stderr = root, logs, logs
-		cmd.Env = append(os.Environ(), "COMPOSER_MIRROR_PATH_REPOS=1", "COMPOSER="+filepath.Join(root, "composer.json"), "COMPOSER_VENDOR_DIR="+filepath.Join(root, filepath.FromSlash(vendorDir)), "COMPOSER_BIN_DIR="+filepath.Join(root, filepath.FromSlash(binDir)))
-		fmt.Fprintln(logs, "Preparing production Composer dependencies in an isolated directory…")
-		if err := cmd.Run(); err != nil {
-			return fail(fmt.Errorf("Composer preparation failed: %w (configure composer.command for the module's PHP version)", err))
+		runErr := cmd.Run()
+		if err := ctx.Err(); err != nil {
+			return fail(err)
+		}
+		if runErr != nil {
+			return fail(fmt.Errorf("Composer preparation failed: %w (configure composer.command or composer.docker_image for the module's PHP version)", runErr))
+		}
+		if err := restore(); err != nil {
+			return fail(err)
 		}
 	}
 	snapshot := &Snapshot{Root: root, Source: source, Name: name, Version: version, Rules: rules}
