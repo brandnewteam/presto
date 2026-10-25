@@ -1,58 +1,48 @@
 package engine
 
 import (
-	"encoding/xml"
 	"fmt"
-	"html"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/brandnewteam/presto/internal/config"
 )
 
-type cdata struct {
-	Value string `xml:",cdata"`
-}
-
-type moduleXML struct {
-	XMLName          xml.Name `xml:"module"`
-	Name             string   `xml:"name"`
-	DisplayName      cdata    `xml:"displayName"`
-	Version          cdata    `xml:"version"`
-	Description      cdata    `xml:"description"`
-	Author           cdata    `xml:"author"`
-	AuthorURI        *cdata   `xml:"author_uri,omitempty"`
-	Tab              cdata    `xml:"tab"`
-	ConfirmUninstall *cdata   `xml:"confirmUninstall,omitempty"`
-	IsConfigurable   int      `xml:"is_configurable"`
-	NeedInstance     int      `xml:"need_instance"`
-	LimitedCountries string   `xml:"limited_countries"`
-}
-
-func xmlText(value string) (cdata, error) {
+// xmlText rejects values that cannot appear in an XML document.
+func xmlText(value string) (string, error) {
 	if !utf8.ValidString(value) {
-		return cdata{}, fmt.Errorf("config.xml metadata must be valid UTF-8")
+		return "", fmt.Errorf("config.xml metadata must be valid UTF-8")
 	}
 	for _, r := range value {
 		if r < 32 && r != '\t' && r != '\n' && r != '\r' || r == 0xfffe || r == 0xffff {
-			return cdata{}, fmt.Errorf("config.xml metadata contains an XML control character")
+			return "", fmt.Errorf("config.xml metadata contains an XML control character")
 		}
 	}
-	return cdata{value}, nil
+	return value, nil
 }
 
+// cdata splits any "]]>" across sections; PrestaShop would emit it unescaped and break the XML.
+func cdata(value string) string {
+	return "<![CDATA[" + strings.ReplaceAll(value, "]]>", "]]]]><![CDATA[>") + "]]>"
+}
+
+// renderConfigXML reproduces Module::_generateConfigXml() from PrestaShop 1.6 byte for byte.
 func renderConfigXML(snapshot *Snapshot, settings config.ModuleXML, source string) ([]byte, error) {
+	properties, configurable := phpProperties(source, snapshot.Name)
 	if snapshot.Version == "" {
+		if _, exists := properties["version"]; exists {
+			return nil, fmt.Errorf("cannot statically resolve $this->version for config.xml; set module.version in TOML or use build --module-version")
+		}
 		return nil, fmt.Errorf("config.xml requires a module version; set module.version or use build --module-version (even with --no-version)")
 	}
 	if !ValidModule(snapshot.Name) || !safeVersion.MatchString(snapshot.Version) {
 		return nil, fmt.Errorf("invalid module identity for config.xml")
 	}
-	properties, configurable := phpProperties(source, snapshot.Name)
-	text := func(name string, override *string, entities bool) (cdata, error) {
+	text := func(name string, override *string) (string, error) {
 		value := ""
 		if override != nil {
 			value = *override
@@ -60,16 +50,19 @@ func renderConfigXML(snapshot *Snapshot, settings config.ModuleXML, source strin
 			var ok bool
 			value, ok = phpString(property.tokens)
 			if !ok || property.conditional {
-				return cdata{}, dynamicProperty(name)
+				return "", dynamicProperty(name)
 			}
 		}
-		if _, err := xmlText(value); err != nil {
-			return cdata{}, err
-		}
-		if entities {
-			value = strings.ReplaceAll(html.EscapeString(value), "&amp;", "&")
-		}
 		return xmlText(value)
+	}
+	// Tools::htmlentitiesUTF8, with ampersands restored where native code does so.
+	entities := func(name string, override *string, ampersands bool) (string, error) {
+		value, err := text(name, override)
+		value = phpHTMLEntities(value)
+		if ampersands {
+			value = strings.ReplaceAll(value, "&amp;", "&")
+		}
+		return value, err
 	}
 	flag := func(name string, override *bool, fallback bool) (int, error) {
 		if override != nil {
@@ -84,44 +77,45 @@ func renderConfigXML(snapshot *Snapshot, settings config.ModuleXML, source strin
 		}
 		return boolInt(fallback), nil
 	}
-	var result moduleXML
-	var err error
-	result.Name = snapshot.Name
-	result.Version = cdata{snapshot.Version}
-	if result.DisplayName, err = text("displayName", settings.DisplayName, true); err != nil {
-		return nil, err
-	}
-	if result.Description, err = text("description", settings.Description, true); err != nil {
-		return nil, err
-	}
-	if result.Author, err = text("author", settings.Author, true); err != nil {
-		return nil, err
-	}
-	if result.Tab, err = text("tab", settings.Tab, false); err != nil {
-		return nil, err
-	}
-	// Native PrestaShop applies HTML entities to tab, including ampersands.
-	result.Tab.Value = html.EscapeString(result.Tab.Value)
-	if result.IsConfigurable, err = flag("is_configurable", settings.IsConfigurable, configurable); err != nil {
-		return nil, err
-	}
-	if result.NeedInstance, err = flag("need_instance", settings.NeedInstance, true); err != nil {
-		return nil, err
-	}
-	uri, err := text("author_uri", settings.AuthorURI, false)
+	displayName, err := entities("displayName", settings.DisplayName, true)
 	if err != nil {
 		return nil, err
 	}
-	if uri.Value != "" {
-		uri.Value = html.EscapeString(uri.Value)
-		result.AuthorURI = &uri
+	description, err := entities("description", settings.Description, true)
+	if err != nil {
+		return nil, err
 	}
+	author, err := entities("author", settings.Author, true)
+	if err != nil {
+		return nil, err
+	}
+	tab, err := entities("tab", settings.Tab, false)
+	if err != nil {
+		return nil, err
+	}
+	isConfigurable, err := flag("is_configurable", settings.IsConfigurable, configurable)
+	if err != nil {
+		return nil, err
+	}
+	needInstance, err := flag("need_instance", settings.NeedInstance, true)
+	if err != nil {
+		return nil, err
+	}
+	uri, err := text("author_uri", settings.AuthorURI)
+	if err != nil {
+		return nil, err
+	}
+	authorURI := ""
+	if uri != "" {
+		authorURI = "<author_uri>" + cdata(phpHTMLEntities(uri)) + "</author_uri>"
+	}
+	confirmUninstall := ""
 	if _, exists := properties["confirmUninstall"]; exists || settings.ConfirmUninstall != nil {
-		confirmation, err := text("confirmUninstall", settings.ConfirmUninstall, false)
+		confirmation, err := text("confirmUninstall", settings.ConfirmUninstall)
 		if err != nil {
 			return nil, err
 		}
-		result.ConfirmUninstall = &confirmation
+		confirmUninstall = "\n\t<confirmUninstall>" + cdata(confirmation) + "</confirmUninstall>"
 	}
 	var countries []string
 	if settings.LimitedCountries != nil {
@@ -139,14 +133,22 @@ func renderConfigXML(snapshot *Snapshot, settings config.ModuleXML, source strin
 		}
 	}
 	// This is PrestaShop 1.6's convention: only a single restriction is serialized.
+	limitedCountries := ""
 	if len(countries) == 1 {
-		result.LimitedCountries = countries[0]
+		limitedCountries = countries[0]
 	}
-	data, err := xml.MarshalIndent(result, "", "\t")
-	if err != nil {
-		return nil, err
-	}
-	return append([]byte("<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n"), append(data, '\n')...), nil
+	return []byte(`<?xml version="1.0" encoding="UTF-8" ?>
+<module>
+	<name>` + snapshot.Name + `</name>
+	<displayName>` + cdata(displayName) + `</displayName>
+	<version>` + cdata(snapshot.Version) + `</version>
+	<description>` + cdata(description) + `</description>
+	<author>` + cdata(author) + `</author>` + authorURI + `
+	<tab>` + cdata(tab) + `</tab>` + confirmUninstall + `
+	<is_configurable>` + strconv.Itoa(isConfigurable) + `</is_configurable>
+	<need_instance>` + strconv.Itoa(needInstance) + `</need_instance>
+	<limited_countries>` + limitedCountries + `</limited_countries>
+</module>`), nil
 }
 
 // AddConfigXML generates the English metadata cache in the private prepared copy.

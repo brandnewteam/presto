@@ -71,6 +71,63 @@ class Helper { public function __construct() { $this->author = 'wrong class'; } 
 	}
 }
 
+// The PHP side is the expression from PrestaShop 1.6.1's Module::_generateConfigXml().
+func TestConfigXMLIsByteIdenticalToNativeGenerator(t *testing.T) {
+	php, err := exec.LookPath("php")
+	if err != nil {
+		t.Skip("PHP is not installed")
+	}
+	source := `<?php
+class Examplemodule extends Module {
+    public function __construct() {
+        $this->version = '1.2.3';
+        $this->displayName = $this->l('Modulo "più" <bello> & l\'IVA € — ok');
+        $this->description = 'Ça marche: ü ß ™ &eacute; 漢字';
+        $this->author = 'Brand New & Co.';
+        $this->author_uri = 'https://example.com/?a=1&b=è';
+        $this->tab = 'front_office_features&more';
+        $this->confirmUninstall = 'Sicuro? <b>sì</b> & ]]> fine';
+        $this->need_instance = 0;
+        $this->limited_countries = array('IT');
+    }
+    public function getContent() {}
+}`
+	data, err := renderConfigXML(&Snapshot{Name: "examplemodule", Version: "1.2.3"}, config.ModuleXML{}, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	native := `class Tools { static function htmlentitiesUTF8($string, $type = ENT_QUOTES) { return htmlentities((string)$string, $type, 'utf-8'); } }
+$m = json_decode(stream_get_contents(STDIN));
+$author_uri = '';
+if (isset($m->author_uri) && $m->author_uri) {
+    $author_uri = '<author_uri><![CDATA['.Tools::htmlentitiesUTF8($m->author_uri).']]></author_uri>';
+}
+echo '<?xml version="1.0" encoding="UTF-8" ?>
+<module>
+	<name>'.$m->name.'</name>
+	<displayName><![CDATA['.str_replace('&amp;', '&', Tools::htmlentitiesUTF8($m->displayName)).']]></displayName>
+	<version><![CDATA['.$m->version.']]></version>
+	<description><![CDATA['.str_replace('&amp;', '&', Tools::htmlentitiesUTF8($m->description)).']]></description>
+	<author><![CDATA['.str_replace('&amp;', '&', Tools::htmlentitiesUTF8($m->author)).']]></author>'
+    .$author_uri.'
+	<tab><![CDATA['.Tools::htmlentitiesUTF8($m->tab).']]></tab>'.(isset($m->confirmUninstall) ? "\n\t".'<confirmUninstall><![CDATA['.$m->confirmUninstall.']]></confirmUninstall>' : '').'
+	<is_configurable>'.(isset($m->is_configurable) ? (int)$m->is_configurable : 0).'</is_configurable>
+	<need_instance>'.(int)$m->need_instance.'</need_instance>'.(isset($m->limited_countries) ? "\n\t".'<limited_countries>'.(count($m->limited_countries) == 1 ? $m->limited_countries[0] : '').'</limited_countries>' : '').'
+</module>';`
+	metadata := `{"name":"examplemodule","version":"1.2.3","displayName":"Modulo \"più\" <bello> & l'IVA € — ok","description":"Ça marche: ü ß ™ &eacute; 漢字","author":"Brand New & Co.","author_uri":"https://example.com/?a=1&b=è","tab":"front_office_features&more","confirmUninstall":"Sicuro? <b>sì</b> & ]]> fine","is_configurable":1,"need_instance":0,"limited_countries":["IT"]}`
+	cmd := exec.Command(php, "-r", native)
+	cmd.Stdin = strings.NewReader(metadata)
+	want, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// PrestaShop leaves "]]>" inside CDATA unescaped, producing invalid XML; Presto splits it.
+	want = bytes.Replace(want, []byte("& ]]> fine"), []byte("& ]]]]><![CDATA[> fine"), 1)
+	if !bytes.Equal(data, want) {
+		t.Fatalf("got:\n%s\nwant:\n%s", data, want)
+	}
+}
+
 func TestConfigXMLDynamicMetadataAndOverrides(t *testing.T) {
 	source := `<?php class examplemodule extends Module { public function __construct() { $this->displayName = getenv('TITLE'); } }`
 	snapshot := &Snapshot{Name: "examplemodule", Version: "1.2.3"}
@@ -95,9 +152,16 @@ func TestConfigXMLDynamicMetadataAndOverrides(t *testing.T) {
 	}
 	for _, source := range []string{
 		`<?php $this->displayName = "Hello $name";`,
-		`<?php $this->displayName = 'first'; $this->displayName = 'second';`,
+		`<?php $this->displayName = 'first'; if (true) { $this->displayName = 'second'; }`,
 		`<?php if (true) { $this->displayName = 'conditional'; }`,
 		`<?php if (true) $this->displayName = 'conditional';`,
+		`<?php if ($a) $this->tab = 'a'; else $this->displayName = 'b';`,
+		`<?php if ($a): $this->displayName = 'alternative'; endif;`,
+		`<?php if ($a) return; $this->displayName = 'after an early exit';`,
+		`<?php $this->displayName = 'base'; $this->displayName .= ' suffix';`,
+		`<?php $this->displayName = 'base'; $this->displayName[0] = 'X';`,
+		`<?php $f = function () { $this->displayName = 'closure'; };`,
+		`<?php foreach ($a as $b) if ($b) { } $this->displayName = 'x'; $this->displayName = getenv('X');`,
 	} {
 		if _, err := renderConfigXML(snapshot, config.ModuleXML{}, source); err == nil {
 			t.Fatalf("accepted dynamic metadata: %s", source)
@@ -109,6 +173,46 @@ func TestConfigXMLDynamicMetadataAndOverrides(t *testing.T) {
 	}
 	if _, err := renderConfigXML(&Snapshot{Name: "examplemodule"}, settings, source); err == nil {
 		t.Fatal("invented an unknown version")
+	}
+}
+
+func TestPHPMetadataOnlyTreatsExecutedAssignmentsAsConditional(t *testing.T) {
+	source := `<?php
+class Examplemodule extends Module {
+    public string $author = 'Typed default';
+    public static $tab = 'static is not module metadata';
+    public function __construct($name = null, Context $context = null) {
+        if (is_null($context)) {
+            $context = Context::getContext();
+        }
+        foreach (array(1, 2) as $value): $this->unused = $value; endforeach;
+        $this->name = 'examplemodule';
+        $this->version = '12.10.11';
+        $this->callback = function () { return 'closures do not exit the constructor'; };
+        try { $this->warning = 'blocks stay conditional'; } catch (Exception $e) {}
+        $this->displayName = 'first';
+        $this->displayName = $this->l('Last unconditional value');
+        $this->ready = $this->tab == 'comparison';
+        parent::__construct($name, $context);
+    }
+}`
+	properties, _ := phpProperties(source, "examplemodule")
+	for name, want := range map[string]string{"version": "12.10.11", "displayName": "Last unconditional value", "author": "Typed default"} {
+		property, exists := properties[name]
+		value, ok := phpString(property.tokens)
+		if !exists || !ok || property.conditional || value != want {
+			t.Errorf("%s = %q (exists %v, static %v, conditional %v)", name, value, exists, ok, property.conditional)
+		}
+	}
+	if _, exists := properties["tab"]; exists {
+		t.Error("read a static property or a comparison as module metadata")
+	}
+	if !properties["warning"].conditional || !properties["unused"].conditional {
+		t.Error("block assignments must stay conditional")
+	}
+	data, err := renderConfigXML(&Snapshot{Name: "examplemodule"}, config.ModuleXML{}, `<?php class examplemodule { function __construct() { $this->version = self::VERSION; } }`)
+	if err == nil || !strings.Contains(err.Error(), "$this->version") {
+		t.Fatalf("%v %s", err, data)
 	}
 }
 
