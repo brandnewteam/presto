@@ -259,6 +259,8 @@ func syncCommand(opts *options, deployment bool) *cobra.Command {
 		if err != nil {
 			if opts.json && result.Upgrade != nil && result.Error != "" {
 				_ = json.NewEncoder(cmd.OutOrStdout()).Encode(result)
+			} else if !opts.json {
+				printFailure(cmd, targetNames[0], result, false)
 			}
 			return err
 		}
@@ -302,11 +304,45 @@ func printResult(cmd *cobra.Command, asJSON bool, target string, result engine.R
 			fmt.Fprintf(cmd.OutOrStdout(), "  %s %s\n", group.prefix, path)
 		}
 	}
-	if result.Upgrade != nil {
-		fmt.Fprintf(cmd.OutOrStdout(), "PrestaShop: %s (context %s, shops %v, version %s → %s)\n", result.Upgrade.Status, result.Upgrade.ShopContext, result.Upgrade.ShopIDs, result.Upgrade.FromVersion, result.Upgrade.ToVersion)
-	}
+	printUpgrade(cmd.OutOrStdout(), result.Upgrade)
 	fmt.Fprintf(cmd.OutOrStdout(), "%d created, %d updated, %d deleted, %d unchanged\n", len(result.Created), len(result.Updated), len(result.Deleted), result.Unchanged)
 	return nil
+}
+
+// printFailure shows what a failed target attempted; main reports the error itself.
+// Nothing is rolled back, so the planned changes and recovery state matter. Batches
+// always name the failed target so their output keeps target order.
+func printFailure(cmd *cobra.Command, target string, result engine.Result, always bool) {
+	changes := len(result.Created) + len(result.Updated) + len(result.Deleted)
+	if !always && result.Upgrade == nil && changes == 0 {
+		return
+	}
+	w := cmd.ErrOrStderr()
+	fmt.Fprintf(w, "Failed to synchronize %s → %s (%s)\n", result.Module, target, result.Destination)
+	if changes > 0 {
+		fmt.Fprintf(w, "  planned %d created, %d updated, %d deleted; changes may be partly applied\n", len(result.Created), len(result.Updated), len(result.Deleted))
+	}
+	printUpgrade(w, result.Upgrade)
+}
+
+func printUpgrade(w io.Writer, upgrade *lifecycle.Result) {
+	if upgrade == nil {
+		return
+	}
+	fmt.Fprintf(w, "PrestaShop: %s (context %s, shops %v, version %s → %s)\n", upgrade.Status, upgrade.ShopContext, upgrade.ShopIDs, upgrade.FromVersion, upgrade.ToVersion)
+	if upgrade.Status != "failed" {
+		return
+	}
+	if upgrade.Disabled {
+		fmt.Fprintf(w, "  module disabled in shops %v\n", upgrade.ShopIDs)
+	} else if upgrade.EnabledShopIDs != nil {
+		fmt.Fprintf(w, "  module still enabled in shops %v\n", upgrade.EnabledShopIDs)
+	} else {
+		fmt.Fprintln(w, "  activation state unknown")
+	}
+	if upgrade.RecoveryError != "" {
+		fmt.Fprintf(w, "  recovery failed: %s\n", upgrade.RecoveryError)
+	}
 }
 
 func targetsCommand(opts *options) *cobra.Command {

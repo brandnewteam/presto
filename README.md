@@ -301,7 +301,7 @@ go test -race ./...
 go vet ./...
 ```
 
-`targets` does not connect to servers. `doctor <ssh-target>` connects for receiver/root checks without changing module files. JSON goes to stdout; Composer logs and errors go to stderr. Failures exit with status 1. Lifecycle failures additionally return a JSON result with an `error` and failed upgrade status when `--json` is used; always check the exit status.
+`targets` does not connect to servers. `doctor <ssh-target>` connects for receiver/root checks without changing module files. JSON goes to stdout; Composer logs and errors go to stderr. Failures exit with status 1. Without `--json`, a failed target also prints its planned file changes and any PrestaShop upgrade and recovery state (disabled shops, recovery errors) on stderr, because nothing is rolled back. Lifecycle failures additionally return a JSON result with an `error` and failed upgrade status when `--json` is used; always check the exit status.
 
 There is no legacy `validate` command in v1. This does not assume that the old Validator endpoint still works.
 

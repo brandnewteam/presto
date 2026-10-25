@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/brandnewteam/presto/internal/engine"
+	"github.com/brandnewteam/presto/internal/lifecycle"
 	"github.com/brandnewteam/presto/internal/testshop"
 )
 
@@ -193,6 +195,20 @@ func TestSyncAllContinuesAfterAnApplyFailure(t *testing.T) {
 	}
 }
 
+func TestSyncAllReportsFailedTargetsInHumanOutput(t *testing.T) {
+	f := newSyncFixture(t)
+	testshop.Put(t, f.alpha, "modules/examplemodule/views", "conflicts with source directory")
+	var stdout, stderr bytes.Buffer
+	command := New("test", strings.NewReader(""), &stdout, &stderr)
+	command.SetArgs(f.args())
+	if err := command.Execute(); err == nil {
+		t.Fatal("ignored failed target")
+	}
+	if !strings.Contains(stderr.String(), "Failed to synchronize examplemodule → alpha (") || !strings.Contains(stdout.String(), "→ zeta (") {
+		t.Fatalf("stdout:\n%s\nstderr:\n%s", &stdout, &stderr)
+	}
+}
+
 func TestBatchComposerProcess(t *testing.T) {
 	if os.Getenv("PRESTO_BATCH_COMPOSER_HELPER") != "1" {
 		return
@@ -271,5 +287,22 @@ func TestSyncAllPreservesPerTargetUpgradeContext(t *testing.T) {
 	enabled := testshop.State(t, f.zeta)["enabled"].([]any)
 	if len(enabled) != 2 || enabled[0] != float64(1) || enabled[1] != float64(2) {
 		t.Fatalf("disabled shops outside target context: %v", enabled)
+	}
+}
+
+func TestFailureOutputShowsRecoveryState(t *testing.T) {
+	var stderr bytes.Buffer
+	command := New("test", strings.NewReader(""), &bytes.Buffer{}, &stderr)
+	upgrade := &lifecycle.Result{Status: "failed", ShopContext: "shop", ShopIDs: []int{2}, FromVersion: "1.0.0", ToVersion: "1.1.0", RecoveryError: "database unavailable"}
+	printFailure(command, "local", engine.Result{Module: "examplemodule", Destination: "/shop/modules/examplemodule", Updated: []string{"examplemodule.php"}, Upgrade: upgrade}, false)
+	for _, want := range []string{"planned 0 created, 1 updated, 0 deleted", "PrestaShop: failed (context shop, shops [2], version 1.0.0 → 1.1.0)", "activation state unknown", "recovery failed: database unavailable"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("missing %q in:\n%s", want, &stderr)
+		}
+	}
+	stderr.Reset()
+	printFailure(command, "local", engine.Result{Module: "examplemodule"}, false)
+	if stderr.Len() != 0 {
+		t.Fatal("single-target failure without details must leave reporting to the error")
 	}
 }

@@ -30,6 +30,9 @@ func syncAllTargets(cmd *cobra.Command, asJSON bool, cfg config.Config, names []
 		if err != nil {
 			result.Error = err.Error()
 			failures = append(failures, fmt.Errorf("target %q: %w", name, err))
+			if !asJSON {
+				printFailure(cmd, name, result, true)
+			}
 		} else if !asJSON {
 			if err := printResult(cmd, false, name, result); err != nil {
 				failures = append(failures, err)
