@@ -17,7 +17,7 @@ type syncTargetResult struct {
 
 // Each target is independent after shared preparation. Finish the other targets
 // after an apply failure, but propagate failure and stop on cancellation.
-func syncAllTargets(cmd *cobra.Command, asJSON bool, cfg config.Config, names []string, snapshot *engine.Snapshot, dryRun bool) error {
+func syncAllTargets(cmd *cobra.Command, asJSON, color bool, cfg config.Config, names []string, snapshot *engine.Snapshot, dryRun bool) error {
 	results := make([]syncTargetResult, 0, len(names))
 	var failures []error
 	for _, name := range names {
@@ -34,7 +34,7 @@ func syncAllTargets(cmd *cobra.Command, asJSON bool, cfg config.Config, names []
 				printFailure(cmd, name, result, true)
 			}
 		} else if !asJSON {
-			if err := printResult(cmd, false, name, result); err != nil {
+			if err := printResult(cmd, false, color, name, result); err != nil {
 				failures = append(failures, err)
 			}
 		}

@@ -196,7 +196,12 @@ func syncCommand(opts *options, deployment bool) *cobra.Command {
 		usage, arguments = "deploy <target>", cobra.ExactArgs(1)
 	}
 	var dryRun bool
+	var colorMode string
 	cmd := &cobra.Command{Use: usage, Short: description, Args: arguments, RunE: func(cmd *cobra.Command, args []string) error {
+		color, err := colorEnabled(colorMode, cmd.OutOrStdout())
+		if err != nil {
+			return err
+		}
 		cfg, project, err := load(opts, true)
 		if err != nil {
 			return err
@@ -246,7 +251,7 @@ func syncCommand(opts *options, deployment bool) *cobra.Command {
 		}
 		defer cleanup()
 		if allTargets {
-			return syncAllTargets(cmd, opts.json, cfg, targetNames, snapshot, dryRun)
+			return syncAllTargets(cmd, opts.json, color, cfg, targetNames, snapshot, dryRun)
 		}
 		target := cfg.Targets[targetNames[0]]
 		var result engine.Result
@@ -266,9 +271,10 @@ func syncCommand(opts *options, deployment bool) *cobra.Command {
 			}
 			return err
 		}
-		return printResult(cmd, opts.json, targetNames[0], result)
+		return printResult(cmd, opts.json, color, targetNames[0], result)
 	}}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show content changes without modifying the destination")
+	cmd.Flags().StringVar(&colorMode, "color", "auto", "color dry-run diffs: auto, always or never")
 	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) > 0 {
 			return nil, cobra.ShellCompDirectiveNoFileComp
@@ -289,7 +295,7 @@ func syncCommand(opts *options, deployment bool) *cobra.Command {
 	return cmd
 }
 
-func printResult(cmd *cobra.Command, asJSON bool, target string, result engine.Result) error {
+func printResult(cmd *cobra.Command, asJSON, color bool, target string, result engine.Result) error {
 	if asJSON {
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(result)
 	}
@@ -304,6 +310,9 @@ func printResult(cmd *cobra.Command, asJSON bool, target string, result engine.R
 	}{{"+", result.Created}, {"~", result.Updated}, {"-", result.Deleted}} {
 		for _, path := range group.paths {
 			fmt.Fprintf(cmd.OutOrStdout(), "  %s %s\n", group.prefix, path)
+			if text, ok := result.Diffs[path]; ok && group.prefix == "~" {
+				printDiff(cmd.OutOrStdout(), text, color)
+			}
 		}
 	}
 	printUpgrade(cmd.OutOrStdout(), result.Upgrade)

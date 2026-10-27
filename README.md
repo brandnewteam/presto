@@ -110,6 +110,35 @@ An error during an individual target's synchronization is reported while the rem
 
 With `--json`, the no-target form emits one array in target order. Each entry contains `target` plus the normal result fields; failed entries also contain `error` and any available upgrade details. The no-target form always emits an array, even with only one local target. The array is still emitted when a target fails, with a nonzero exit status. Setup failures occur before result output; after cancellation the array includes only attempted targets. `presto sync <target> --json` keeps its existing single-object output. With no local targets configured, `presto sync` returns an error.
 
+## Dry runs and diffs
+
+`--dry-run` on `sync` and `deploy` lists the planned changes without touching the shop. Each updated file is followed by a unified diff from the shop's copy to the new one, with three lines of context like `diff -u`:
+
+```text
+Would synchronize examplemodule → local (/Users/me/Sites/prestashop/modules/examplemodule)
+  + views/new.tpl
+  ~ examplemodule.php
+    --- a/examplemodule.php
+    +++ b/examplemodule.php
+    @@ -1,3 +1,3 @@
+     <?php
+    -$this->version = '1.2.2';
+    +$this->version = '1.2.3';
+     function helper() {
+  ~ views/img/logo.png
+    binary file differs: 5120 → 4896 bytes
+  - obsolete.php
+1 created, 2 updated, 1 deleted, 3 unchanged
+```
+
+Created and deleted files are listed without their contents. Files with a NUL byte or invalid UTF-8 show `binary file differs` with both sizes, files over 4 MiB show `file too large to diff`, and on macOS/Linux a permission change shows `file mode changed: 0644 → 0755`. Each diff stops after 400 lines (`… N more lines`); after 2000 lines in total, the remaining updated files show `diff omitted: output limit reached`, so a large vendor update does not flood the terminal. Preserved paths are never read or diffed. Control characters in file content are printed as `�`.
+
+`--color=auto|always|never` (default `auto`) colors removed lines red, added lines green, hunk headers cyan and file headers bold. `auto` colors only when stdout is a terminal, `NO_COLOR` is unset or empty and `TERM` is not `dumb`; `always` and `never` override both.
+
+With `--json`, a dry run adds a `diffs` object mapping each updated path to the same text, uncolored and with the same limits; it is omitted when nothing is updated and on real runs.
+
+For `deploy`, the diff is computed by the receiver on the server. A receiver from Presto 0.2.0 or earlier cannot do this: the dry run still works, and Presto prints `receiver 0.2.0 too old to show diffs` on stderr. Update the remote binary to see them.
+
 ## Module configuration
 
 From a module repository, optionally run `presto init`. Usually, the module name comes from the directory and the version from a literal `$this->version = '1.2.3';` assignment in `<module>.php`. PHP source is never executed to discover metadata; dynamic metadata can be supplied through TOML. Repositories named differently from their module need an explicit name:
