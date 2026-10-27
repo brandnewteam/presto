@@ -38,7 +38,7 @@ class Examplemodule extends Module {
 }
 class Helper { public function __construct() { $this->author = 'wrong class'; } }
 `
-	data, err := renderConfigXML(&Snapshot{Name: "examplemodule", Version: "1.2.3"}, config.ModuleXML{}, source)
+	data, err := renderConfigXML(&Snapshot{Name: "examplemodule", Version: "1.2.3"}, config.ModuleXML{}, source, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,27 @@ class Helper { public function __construct() { $this->author = 'wrong class'; } 
 	}
 }
 
-// The PHP side is the expression from PrestaShop 1.6.1's Module::_generateConfigXml().
+// nativeConfigXML is the expression from PrestaShop 1.6.1's Module::_generateConfigXml(),
+// reading module properties from JSON on stdin.
+const nativeConfigXML = `class Tools { static function htmlentitiesUTF8($string, $type = ENT_QUOTES) { return htmlentities((string)$string, $type, 'utf-8'); } }
+$m = json_decode(stream_get_contents(STDIN));
+$author_uri = '';
+if (isset($m->author_uri) && $m->author_uri) {
+    $author_uri = '<author_uri><![CDATA['.Tools::htmlentitiesUTF8($m->author_uri).']]></author_uri>';
+}
+echo '<?xml version="1.0" encoding="UTF-8" ?>
+<module>
+	<name>'.$m->name.'</name>
+	<displayName><![CDATA['.str_replace('&amp;', '&', Tools::htmlentitiesUTF8($m->displayName)).']]></displayName>
+	<version><![CDATA['.$m->version.']]></version>
+	<description><![CDATA['.str_replace('&amp;', '&', Tools::htmlentitiesUTF8($m->description)).']]></description>
+	<author><![CDATA['.str_replace('&amp;', '&', Tools::htmlentitiesUTF8($m->author)).']]></author>'
+    .$author_uri.'
+	<tab><![CDATA['.Tools::htmlentitiesUTF8($m->tab).']]></tab>'.(isset($m->confirmUninstall) ? "\n\t".'<confirmUninstall><![CDATA['.$m->confirmUninstall.']]></confirmUninstall>' : '').'
+	<is_configurable>'.(isset($m->is_configurable) ? (int)$m->is_configurable : 0).'</is_configurable>
+	<need_instance>'.(int)$m->need_instance.'</need_instance>'.(isset($m->limited_countries) ? "\n\t".'<limited_countries>'.(count($m->limited_countries) == 1 ? $m->limited_countries[0] : '').'</limited_countries>' : '').'
+</module>';`
+
 func TestConfigXMLIsByteIdenticalToNativeGenerator(t *testing.T) {
 	php, err := exec.LookPath("php")
 	if err != nil {
@@ -92,28 +112,11 @@ class Examplemodule extends Module {
     }
     public function getContent() {}
 }`
-	data, err := renderConfigXML(&Snapshot{Name: "examplemodule", Version: "1.2.3"}, config.ModuleXML{}, source)
+	data, err := renderConfigXML(&Snapshot{Name: "examplemodule", Version: "1.2.3"}, config.ModuleXML{}, source, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	native := `class Tools { static function htmlentitiesUTF8($string, $type = ENT_QUOTES) { return htmlentities((string)$string, $type, 'utf-8'); } }
-$m = json_decode(stream_get_contents(STDIN));
-$author_uri = '';
-if (isset($m->author_uri) && $m->author_uri) {
-    $author_uri = '<author_uri><![CDATA['.Tools::htmlentitiesUTF8($m->author_uri).']]></author_uri>';
-}
-echo '<?xml version="1.0" encoding="UTF-8" ?>
-<module>
-	<name>'.$m->name.'</name>
-	<displayName><![CDATA['.str_replace('&amp;', '&', Tools::htmlentitiesUTF8($m->displayName)).']]></displayName>
-	<version><![CDATA['.$m->version.']]></version>
-	<description><![CDATA['.str_replace('&amp;', '&', Tools::htmlentitiesUTF8($m->description)).']]></description>
-	<author><![CDATA['.str_replace('&amp;', '&', Tools::htmlentitiesUTF8($m->author)).']]></author>'
-    .$author_uri.'
-	<tab><![CDATA['.Tools::htmlentitiesUTF8($m->tab).']]></tab>'.(isset($m->confirmUninstall) ? "\n\t".'<confirmUninstall><![CDATA['.$m->confirmUninstall.']]></confirmUninstall>' : '').'
-	<is_configurable>'.(isset($m->is_configurable) ? (int)$m->is_configurable : 0).'</is_configurable>
-	<need_instance>'.(int)$m->need_instance.'</need_instance>'.(isset($m->limited_countries) ? "\n\t".'<limited_countries>'.(count($m->limited_countries) == 1 ? $m->limited_countries[0] : '').'</limited_countries>' : '').'
-</module>';`
+	native := nativeConfigXML
 	metadata := `{"name":"examplemodule","version":"1.2.3","displayName":"Modulo \"più\" <bello> & l'IVA € — ok","description":"Ça marche: ü ß ™ &eacute; 漢字","author":"Brand New & Co.","author_uri":"https://example.com/?a=1&b=è","tab":"front_office_features&more","confirmUninstall":"Sicuro? <b>sì</b> & ]]> fine","is_configurable":1,"need_instance":0,"limited_countries":["IT"]}`
 	cmd := exec.Command(php, "-r", native)
 	cmd.Stdin = strings.NewReader(metadata)
@@ -131,14 +134,14 @@ echo '<?xml version="1.0" encoding="UTF-8" ?>
 func TestConfigXMLDynamicMetadataAndOverrides(t *testing.T) {
 	source := `<?php class examplemodule extends Module { public function __construct() { $this->displayName = getenv('TITLE'); } }`
 	snapshot := &Snapshot{Name: "examplemodule", Version: "1.2.3"}
-	if _, err := renderConfigXML(snapshot, config.ModuleXML{}, source); err == nil || !strings.Contains(err.Error(), "module.config_xml.display_name") {
+	if _, err := renderConfigXML(snapshot, config.ModuleXML{}, source, nil); err == nil || !strings.Contains(err.Error(), "module.config_xml.display_name") {
 		t.Fatalf("%v", err)
 	}
 	title := "A ]]> title & café"
 	no := false
 	countries := []string{"FR", "IT"}
 	settings := config.ModuleXML{DisplayName: &title, NeedInstance: &no, LimitedCountries: &countries}
-	data, err := renderConfigXML(snapshot, settings, source)
+	data, err := renderConfigXML(snapshot, settings, source, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,15 +166,15 @@ func TestConfigXMLDynamicMetadataAndOverrides(t *testing.T) {
 		`<?php $f = function () { $this->displayName = 'closure'; };`,
 		`<?php foreach ($a as $b) if ($b) { } $this->displayName = 'x'; $this->displayName = getenv('X');`,
 	} {
-		if _, err := renderConfigXML(snapshot, config.ModuleXML{}, source); err == nil {
+		if _, err := renderConfigXML(snapshot, config.ModuleXML{}, source, nil); err == nil {
 			t.Fatalf("accepted dynamic metadata: %s", source)
 		}
 	}
 	bad := "invalid\x00text"
-	if _, err := renderConfigXML(snapshot, config.ModuleXML{Description: &bad}, ""); err == nil {
+	if _, err := renderConfigXML(snapshot, config.ModuleXML{Description: &bad}, "", nil); err == nil {
 		t.Fatal("accepted XML control character")
 	}
-	if _, err := renderConfigXML(&Snapshot{Name: "examplemodule"}, settings, source); err == nil {
+	if _, err := renderConfigXML(&Snapshot{Name: "examplemodule"}, settings, source, nil); err == nil {
 		t.Fatal("invented an unknown version")
 	}
 }
@@ -210,7 +213,7 @@ class Examplemodule extends Module {
 	if !properties["warning"].conditional || !properties["unused"].conditional {
 		t.Error("block assignments must stay conditional")
 	}
-	data, err := renderConfigXML(&Snapshot{Name: "examplemodule"}, config.ModuleXML{}, `<?php class examplemodule { function __construct() { $this->version = self::VERSION; } }`)
+	data, err := renderConfigXML(&Snapshot{Name: "examplemodule"}, config.ModuleXML{}, `<?php class examplemodule { function __construct() { $this->version = self::VERSION; } }`, nil)
 	if err == nil || !strings.Contains(err.Error(), "$this->version") {
 		t.Fatalf("%v %s", err, data)
 	}

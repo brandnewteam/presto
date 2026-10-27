@@ -435,19 +435,34 @@ func phpClosingParen(tokens []phpToken, open int) int {
 }
 
 func phpString(tokens []phpToken) (string, bool) {
+	value, _, ok := phpLocalizable(tokens)
+	return value, ok
+}
+
+// phpLocalizable also returns the translation source of a $this->l() call: its
+// $specific argument, or "" for the module name. Literals have no source.
+func phpLocalizable(tokens []phpToken) (value string, source *string, ok bool) {
 	if len(tokens) == 1 && strings.EqualFold(tokens[0].text, "null") {
-		return "", true
+		return "", nil, true
 	}
 	if len(tokens) == 1 && tokens[0].value != nil {
-		return *tokens[0].value, true
+		return *tokens[0].value, nil, true
 	}
 	if len(tokens) >= 6 && tokens[0].text == "$this" && tokens[1].text == "->" && strings.EqualFold(tokens[2].text, "l") && tokens[3].text == "(" && tokens[len(tokens)-1].text == ")" {
 		args := tokens[4 : len(tokens)-1]
-		if len(args) == 1 || len(args) == 3 && args[1].text == "," && args[2].value != nil {
-			return phpString(args[:1])
+		specific := ""
+		if len(args) == 3 && args[1].text == "," && args[2].value != nil {
+			specific = *args[2].value
+		} else if len(args) != 1 {
+			return "", nil, false
 		}
+		value, literal, ok := phpLocalizable(args[:1])
+		if !ok || literal != nil {
+			return "", nil, false
+		}
+		return value, &specific, true
 	}
-	return "", false
+	return "", nil, false
 }
 
 func phpBool(tokens []phpToken) (bool, bool) {

@@ -31,7 +31,9 @@ func cdata(value string) string {
 }
 
 // renderConfigXML reproduces Module::_generateConfigXml() from PrestaShop 1.6 byte for byte.
-func renderConfigXML(snapshot *Snapshot, settings config.ModuleXML, source string) ([]byte, error) {
+// With translations it renders config_<iso>.xml, where native code generates the file
+// from a module constructed in that language, so $this->l() values are translated.
+func renderConfigXML(snapshot *Snapshot, settings config.ModuleXML, source string, translations map[string]string) ([]byte, error) {
 	properties, configurable := phpProperties(source, snapshot.Name)
 	if snapshot.Version == "" {
 		if _, exists := properties["version"]; exists {
@@ -55,9 +57,37 @@ func renderConfigXML(snapshot *Snapshot, settings config.ModuleXML, source strin
 		}
 		return xmlText(value)
 	}
+	// A TOML override stands in for the argument of $this->l().
+	localized := func(name string, override *string) (string, error) {
+		if translations == nil {
+			return text(name, override)
+		}
+		value, specific := "", new(string)
+		if override != nil {
+			value = *override
+		} else if property, exists := properties[name]; exists {
+			var ok bool
+			value, specific, ok = phpLocalizable(property.tokens)
+			if !ok || property.conditional {
+				return "", dynamicProperty(name)
+			}
+		}
+		if specific != nil {
+			source := snapshot.Name
+			if *specific != "" && *specific != "0" {
+				source = *specific
+			}
+			value = phpModuleTranslation(translations, snapshot.Name, source, value)
+		}
+		return xmlText(value)
+	}
 	// Tools::htmlentitiesUTF8, with ampersands restored where native code does so.
 	entities := func(name string, override *string, ampersands bool) (string, error) {
-		value, err := text(name, override)
+		read := text
+		if name == "displayName" || name == "description" {
+			read = localized
+		}
+		value, err := read(name, override)
 		value = phpHTMLEntities(value)
 		if ampersands {
 			value = strings.ReplaceAll(value, "&amp;", "&")
@@ -111,7 +141,7 @@ func renderConfigXML(snapshot *Snapshot, settings config.ModuleXML, source strin
 	}
 	confirmUninstall := ""
 	if _, exists := properties["confirmUninstall"]; exists || settings.ConfirmUninstall != nil {
-		confirmation, err := text("confirmUninstall", settings.ConfirmUninstall)
+		confirmation, err := localized("confirmUninstall", settings.ConfirmUninstall)
 		if err != nil {
 			return nil, err
 		}
@@ -151,29 +181,60 @@ func renderConfigXML(snapshot *Snapshot, settings config.ModuleXML, source strin
 </module>`), nil
 }
 
-// AddConfigXML generates the English metadata cache in the private prepared copy.
-// Call only for build and deploy; synchronization retains its existing file rules.
+// AddConfigXML generates config.xml, plus config_<iso>.xml for each shipped
+// translations/<iso>.php, in the private prepared copy. Call only for build and
+// deploy; synchronization retains its existing file rules.
 func AddConfigXML(snapshot *Snapshot, settings config.ModuleXML) error {
-	if snapshot.Rules.Preserved("config.xml") {
-		return fmt.Errorf("cannot generate config.xml because files.preserve protects it")
-	}
+	languages := map[string]string{"config.xml": ""}
 	for _, file := range snapshot.Files {
-		if strings.EqualFold(file.Path, "config.xml") && file.Path != "config.xml" {
-			return fmt.Errorf("source path %q conflicts with generated config.xml", file.Path)
+		if match := translationFile.FindStringSubmatch(file.Path); match != nil && match[1] != "en" {
+			languages["config_"+match[1]+".xml"] = file.Path
 		}
 	}
+	names := make([]string, 0, len(languages))
+	for name := range languages {
+		if snapshot.Rules.Preserved(name) {
+			return fmt.Errorf("cannot generate %s because files.preserve protects it", name)
+		}
+		for _, file := range snapshot.Files {
+			if strings.EqualFold(file.Path, name) && file.Path != name {
+				return fmt.Errorf("source path %q conflicts with generated %s", file.Path, name)
+			}
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	source, err := os.ReadFile(filepath.Join(snapshot.Root, snapshot.Name+".php"))
 	if err != nil {
 		return err
 	}
-	data, err := renderConfigXML(snapshot, settings, string(source))
-	if err != nil {
-		return err
+	for _, name := range names {
+		var translations map[string]string
+		if path := languages[name]; path != "" {
+			data, err := os.ReadFile(filepath.Join(snapshot.Root, filepath.FromSlash(path)))
+			if err != nil {
+				return err
+			}
+			if translations, err = phpTranslations(string(data)); err != nil {
+				return fmt.Errorf("%s: %w; it is needed for %s", path, err, name)
+			}
+		}
+		data, err := renderConfigXML(snapshot, settings, string(source), translations)
+		if err != nil {
+			return err
+		}
+		if err := addGeneratedFile(snapshot, name, data); err != nil {
+			return err
+		}
 	}
-	destination := filepath.Join(snapshot.Root, "config.xml")
+	return nil
+}
+
+func addGeneratedFile(snapshot *Snapshot, name string, data []byte) error {
+	destination := filepath.Join(snapshot.Root, name)
 	if info, err := os.Lstat(destination); err == nil {
 		if !info.Mode().IsRegular() {
-			return fmt.Errorf("prepared config.xml is not a regular file")
+			return fmt.Errorf("prepared %s is not a regular file", name)
 		}
 	} else if !os.IsNotExist(err) {
 		return err
@@ -202,14 +263,14 @@ func AddConfigXML(snapshot *Snapshot, settings config.ModuleXML) error {
 	}
 	files := make([]File, 0, len(snapshot.Files)+1)
 	for _, file := range snapshot.Files {
-		if file.Path != "config.xml" {
+		if file.Path != name {
 			files = append(files, file)
 		}
 	}
-	snapshot.Files = append(files, File{Path: "config.xml", SHA256: hash, Size: size, Mode: 0644})
+	snapshot.Files = append(files, File{Path: name, SHA256: hash, Size: size, Mode: 0644})
 	sort.Slice(snapshot.Files, func(i, j int) bool { return snapshot.Files[i].Path < snapshot.Files[j].Path })
-	if !snapshot.Rules.Selected("config.xml") {
-		snapshot.Rules.Include = append(append([]string{}, snapshot.Rules.Include...), "/config.xml")
+	if !snapshot.Rules.Selected(name) {
+		snapshot.Rules.Include = append(append([]string{}, snapshot.Rules.Include...), "/"+name)
 	}
 	return nil
 }
