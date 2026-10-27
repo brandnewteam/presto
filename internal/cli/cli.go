@@ -40,6 +40,7 @@ func New(version string, stdin io.Reader, stdout, stderr io.Writer) *cobra.Comma
 	root.AddCommand(&cobra.Command{Use: "receive", Hidden: true, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
 		shop, _ := cmd.Flags().GetString("root")
 		dry, _ := cmd.Flags().GetBool("dry-run")
+		diff, _ := cmd.Flags().GetBool("diff")
 		if shop == "" {
 			return fmt.Errorf("receive requires --root")
 		}
@@ -60,7 +61,7 @@ func New(version string, stdin io.Reader, stdout, stderr io.Writer) *cobra.Comma
 				return err
 			}
 		}
-		result, err := engine.Receive(cmd.Context(), cmd.InOrStdin(), shop, dry, engine.SyncOptions{PrestaShop: settings, Logs: cmd.ErrOrStderr()})
+		result, err := engine.Receive(cmd.Context(), cmd.InOrStdin(), shop, dry, engine.SyncOptions{PrestaShop: settings, Logs: cmd.ErrOrStderr(), Diff: dry && diff})
 		if err != nil {
 			if result.Upgrade != nil && result.Error != "" {
 				_ = json.NewEncoder(cmd.OutOrStdout()).Encode(result)
@@ -73,6 +74,7 @@ func New(version string, stdin io.Reader, stdout, stderr io.Writer) *cobra.Comma
 	receive.Flags().String("root", "", "PrestaShop root")
 	receive.Flags().String("prestashop-json", "", "private per-target lifecycle options")
 	receive.Flags().Bool("dry-run", false, "compare without writing module files")
+	receive.Flags().Bool("diff", false, "include diffs of updated files in dry-run results")
 	agentInfo := &cobra.Command{Use: "agent-info", Hidden: true, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
 		shop, _ := cmd.Flags().GetString("root")
 		if shop != "" {
@@ -80,7 +82,7 @@ func New(version string, stdin io.Reader, stdout, stderr io.Writer) *cobra.Comma
 				return err
 			}
 		}
-		return json.NewEncoder(cmd.OutOrStdout()).Encode(remote.Info{Protocol: engine.Protocol, Version: version, OS: runtime.GOOS, Arch: runtime.GOARCH, Capabilities: []string{lifecycle.Capability}})
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(remote.Info{Protocol: engine.Protocol, Version: version, OS: runtime.GOOS, Arch: runtime.GOARCH, Capabilities: []string{lifecycle.Capability, engine.DiffCapability}})
 	}}
 	agentInfo.Flags().String("root", "", "check a PrestaShop root")
 	root.AddCommand(agentInfo)

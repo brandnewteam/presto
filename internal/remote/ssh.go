@@ -77,7 +77,8 @@ func Inspect(ctx context.Context, target config.Target, logs io.Writer) (Info, e
 
 func Deploy(ctx context.Context, target config.Target, snapshot *engine.Snapshot, dryRun bool, logs io.Writer) (engine.Result, error) {
 	var result engine.Result
-	if _, err := Inspect(ctx, target, logs); err != nil {
+	receiver, err := Inspect(ctx, target, logs)
+	if err != nil {
 		return result, err
 	}
 	archive, err := os.CreateTemp("", "presto-deploy-*.zip")
@@ -112,6 +113,12 @@ func Deploy(ctx context.Context, target config.Target, snapshot *engine.Snapshot
 	}
 	if dryRun {
 		args = append(args, "--dry-run")
+		// Older receivers reject unknown flags, so ask for diffs only when advertised.
+		if slices.Contains(receiver.Capabilities, engine.DiffCapability) {
+			args = append(args, "--diff")
+		} else {
+			fmt.Fprintf(logs, "presto: receiver %s too old to show diffs; update the remote presto binary to see them\n", receiver.Version)
+		}
 	}
 	cmd, err := command(ctx, target, args...)
 	if err != nil {

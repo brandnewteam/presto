@@ -47,19 +47,22 @@ func TestCLIEndToEnd(t *testing.T) {
 		put(filepath.Join(shop, "modules", "examplemodule", "obsolete.php"), "remove")
 		put(filepath.Join(shop, "modules", "examplemodule", "uploads", "live.txt"), "runtime")
 	}
+	put(filepath.Join(remoteShop, "modules", "examplemodule", "views", "template.tpl"), "old template")
 	global := filepath.Join(workspace, "config.toml")
 	put(global, "schema=1\n[targets.local]\ntype='local'\nroot="+strconv.Quote(localShop)+"\n[targets.remote]\ntype='ssh'\nhost='fixture.invalid'\nroot="+strconv.Quote(remoteShop)+"\nagent="+strconv.Quote(binary)+"\n")
 	environment := append(os.Environ(), "PRESTO_CONFIG="+global)
+	var logs string // stderr of the last invocation
 	invoke := func(args ...string) ([]byte, error) {
 		t.Helper()
 		command := exec.Command(binary, args...)
 		command.Dir = project
 		command.Env = environment
-		var logs bytes.Buffer
-		command.Stderr = &logs
+		var stderr bytes.Buffer
+		command.Stderr = &stderr
 		out, err := command.Output()
+		logs = stderr.String()
 		if err != nil {
-			return out, &commandError{err, string(logs.Bytes())}
+			return out, &commandError{err, logs}
 		}
 		return out, nil
 	}
@@ -149,9 +152,26 @@ func TestCLIEndToEnd(t *testing.T) {
 	if err := json.Unmarshal(out, &planned); err != nil {
 		t.Fatal(err)
 	}
-	if !planned.DryRun {
-		t.Fatal("remote dry run not reported")
+	if !planned.DryRun || planned.Diffs["views/template.tpl"] != "--- a/views/template.tpl\n+++ b/views/template.tpl\n@@ -1 +1 @@\n-old template\n\\ No newline at end of file\n+new template\n\\ No newline at end of file\n" {
+		t.Fatalf("remote dry run not reported with diffs: %s", out)
 	}
+	if strings.Contains(logs, "too old") {
+		t.Fatal(logs)
+	}
+	// A 0.2.0 receiver lacks the diff capability and rejects the --diff flag.
+	put(stub, "#!/bin/sh\nfor arg do last=$arg; done\ncase \"$last\" in\n*agent-info*) printf '%s\\n' '{\"protocol\":1,\"version\":\"0.2.0\",\"os\":\"linux\",\"arch\":\"amd64\",\"capabilities\":[\"prestashop16-upgrade-v1\"]}' ;;\n*\"'--diff'\"*) echo 'unknown flag: --diff' >&2; exit 1 ;;\n*) exec /bin/sh -c \"$last\" ;;\nesac\n")
+	out, err = invoke("deploy", "remote", "--dry-run", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var old engine.Result
+	if err := json.Unmarshal(out, &old); err != nil || !old.DryRun || len(old.Updated) != 1 || old.Diffs != nil {
+		t.Fatalf("old receiver dry run: %s %v", out, err)
+	}
+	if !strings.Contains(logs, "receiver 0.2.0 too old to show diffs") {
+		t.Fatalf("no fallback notice: %s", logs)
+	}
+	put(stub, "#!/bin/sh\nfor arg do last=$arg; done\nexec /bin/sh -c \"$last\"\n")
 	if _, err := os.Stat(filepath.Join(remoteShop, "modules", "examplemodule", "obsolete.php")); err != nil {
 		t.Fatal("remote dry run removed file")
 	}
@@ -162,7 +182,7 @@ func TestCLIEndToEnd(t *testing.T) {
 	if err := json.Unmarshal(out, &applied); err != nil {
 		t.Fatal(err)
 	}
-	if len(applied.Created) != 3 || len(applied.Deleted) != 1 {
+	if len(applied.Created) != 2 || len(applied.Updated) != 1 || len(applied.Deleted) != 1 || applied.Diffs != nil {
 		t.Fatalf("unexpected deployment: %s", out)
 	}
 	if _, err := os.Stat(filepath.Join(remoteShop, "modules", "examplemodule", "config.xml")); err != nil {

@@ -84,6 +84,10 @@ Before application, reject unsupported protocol versions, invalid module names, 
 The Go receiver can accept a future Python sender and vice versa when protocol 1 is preserved. Distribution ZIPs omit `.presto-request.json`; they are not deployment envelopes.
 
 
+## Optional dry-run diff capability
+
+Protocol 1 is unchanged. A receiver that can return dry-run diffs advertises `dry-run-diff-v1` in `agent-info` capabilities and accepts `receive --root <root> --dry-run --diff`; its result then contains `diffs` as described above, computed on the receiver against its own module copy. Senders pass `--diff` only to receivers advertising the capability, because older receivers reject unknown flags. Against an older receiver the dry run proceeds without diffs and the sender reports on stderr that the receiver is too old to show them.
+
 ## Optional PrestaShop 1.6 lifecycle capability
 
 Protocol 1 remains the file transport. An updated receiver advertises `capabilities: ["prestashop16-upgrade-v1"]` in `agent-info`. A target requesting lifecycle processing requires this capability before transfer. Ordinary deployments do not require the extension.
