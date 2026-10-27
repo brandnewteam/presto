@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path"
@@ -170,41 +171,108 @@ func pinAutoloaderSuffix(root, name string) (func() error, error) {
 	if err != nil {
 		return nil, err
 	}
-	var document map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(original))
-	decoder.UseNumber()
-	if err := decoder.Decode(&document); err != nil || document == nil {
+	// Composer's lock content-hash depends on key order inside require, repositories
+	// and the like, so every member other than the suffix is kept byte for byte.
+	document, err := jsonObject(original)
+	if err != nil {
 		return nil, fmt.Errorf("composer.json must contain a JSON object")
 	}
-	settings, _ := document["config"].(map[string]any)
-	if settings == nil {
+	var settings []jsonMember
+	configAt := lastMember(document, "config")
+	if configAt >= 0 {
 		// PHP encodes an empty config object as [], which Composer accepts.
-		if value, exists := document["config"]; exists && !isEmptyList(value) {
-			return nil, fmt.Errorf("composer.json config must be a JSON object")
+		if !isEmptyList(document[configAt].value) {
+			if settings, err = jsonObject(document[configAt].value); err != nil {
+				return nil, fmt.Errorf("composer.json config must be a JSON object")
+			}
 		}
-		settings = map[string]any{}
-		document["config"] = settings
 	}
-	if suffix, _ := settings["autoloader-suffix"].(string); suffix != "" {
-		return func() error { return nil }, nil
+	suffixAt := lastMember(settings, "autoloader-suffix")
+	if suffixAt >= 0 {
+		var value string
+		if json.Unmarshal(settings[suffixAt].value, &value) == nil && value != "" {
+			return func() error { return nil }, nil
+		}
 	}
 	lock, err := os.ReadFile(filepath.Join(root, "composer.lock"))
 	if err != nil {
 		lock = original
 	}
 	hash := sha256.Sum256(append([]byte(name+"\x00"), lock...))
-	settings["autoloader-suffix"] = hex.EncodeToString(hash[:16])
-	pinned, err := json.Marshal(document)
-	if err != nil {
-		return nil, err
+	value, _ := json.Marshal(hex.EncodeToString(hash[:16]))
+	if suffixAt >= 0 {
+		settings[suffixAt].value = value
+	} else {
+		settings = append(settings, jsonMember{"autoloader-suffix", value})
 	}
-	if err := os.WriteFile(manifest, pinned, 0644); err != nil {
+	if configAt >= 0 {
+		document[configAt].value = encodeJSONObject(settings)
+	} else {
+		document = append(document, jsonMember{"config", encodeJSONObject(settings)})
+	}
+	if err := os.WriteFile(manifest, encodeJSONObject(document), 0644); err != nil {
 		return nil, err
 	}
 	return func() error { return os.WriteFile(manifest, original, 0644) }, nil
 }
 
-func isEmptyList(value any) bool {
-	list, ok := value.([]any)
-	return ok && len(list) == 0
+// jsonMember is one name/value pair of a JSON object, with the value left undecoded.
+type jsonMember struct {
+	name  string
+	value json.RawMessage
+}
+
+// jsonObject splits a JSON object into its members in source order.
+func jsonObject(data []byte) ([]jsonMember, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+		return nil, fmt.Errorf("not a JSON object")
+	}
+	var members []jsonMember
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, err
+		}
+		members = append(members, jsonMember{token.(string), value})
+	}
+	if _, err := decoder.Token(); err != nil {
+		return nil, err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return nil, fmt.Errorf("trailing data after JSON object")
+	}
+	return members, nil
+}
+
+func encodeJSONObject(members []jsonMember) []byte {
+	buffer := []byte{'{'}
+	for i, member := range members {
+		if i > 0 {
+			buffer = append(buffer, ',')
+		}
+		name, _ := json.Marshal(member.name)
+		buffer = append(append(append(buffer, name...), ':'), member.value...)
+	}
+	return append(buffer, '}')
+}
+
+// lastMember returns the index of the member PHP's json_decode would keep, or -1.
+func lastMember(members []jsonMember, name string) int {
+	for i := len(members) - 1; i >= 0; i-- {
+		if members[i].name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+func isEmptyList(value json.RawMessage) bool {
+	var list []json.RawMessage
+	trimmed := bytes.TrimSpace(value)
+	return len(trimmed) > 0 && trimmed[0] == '[' && json.Unmarshal(trimmed, &list) == nil && len(list) == 0
 }

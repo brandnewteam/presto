@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/csv"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -64,5 +65,61 @@ func TestDockerComposerUsesContainerPaths(t *testing.T) {
 	}
 	if _, err := os.Stat(mounts[1]["source"]); err != nil {
 		t.Fatal("Composer cache directory was not created")
+	}
+}
+
+func TestPinAutoloaderSuffixKeepsKeyOrder(t *testing.T) {
+	cases := map[string]string{
+		"without config": `{"require": {"zeta/b": "^1", "alpha/a": "^2"}, "replace": {"ql/x": "1.0"}}`,
+		"empty config":   `{"require": {"zeta/b": "^1", "alpha/a": "^2"}, "config": [], "replace": {"ql/x": "1.0"}}`,
+		"other config":   `{"require": {"zeta/b": "^1", "alpha/a": "^2"}, "config": {"platform": {"php": "7.1.33"}, "autoloader-suffix": ""}, "replace": {"ql/x": "1.0"}}`,
+	}
+	for label, manifest := range cases {
+		t.Run(label, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "composer.json")
+			if err := os.WriteFile(path, []byte(manifest), 0644); err != nil {
+				t.Fatal(err)
+			}
+			restore, err := pinAutoloaderSuffix(root, "examplemodule")
+			if err != nil {
+				t.Fatal(err)
+			}
+			pinned, _ := os.ReadFile(path)
+			var document struct {
+				Config struct {
+					Platform map[string]string `json:"platform"`
+					Suffix   string            `json:"autoloader-suffix"`
+				} `json:"config"`
+			}
+			if err := json.Unmarshal(pinned, &document); err != nil || len(document.Config.Suffix) != 32 {
+				t.Fatalf("suffix not pinned: %s", pinned)
+			}
+			if label == "other config" && document.Config.Platform["php"] != "7.1.33" {
+				t.Fatalf("config.platform lost: %s", pinned)
+			}
+			text := string(pinned)
+			if !(strings.Index(text, `"require"`) < strings.Index(text, `"zeta/b"`) && strings.Index(text, `"zeta/b"`) < strings.Index(text, `"alpha/a"`) && strings.Index(text, `"alpha/a"`) < strings.Index(text, `"replace"`)) {
+				t.Fatalf("key order changed: %s", pinned)
+			}
+			if err := restore(); err != nil {
+				t.Fatal(err)
+			}
+			if restored, _ := os.ReadFile(path); string(restored) != manifest {
+				t.Fatalf("composer.json not restored: %s", restored)
+			}
+		})
+	}
+}
+
+func TestPinAutoloaderSuffixRejectsNonObjects(t *testing.T) {
+	for _, manifest := range []string{`null`, `[]`, `{"config": null}`, `{"config": [1]}`, `{} {}`} {
+		root := t.TempDir()
+		if err := os.WriteFile(filepath.Join(root, "composer.json"), []byte(manifest), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pinAutoloaderSuffix(root, "examplemodule"); err == nil {
+			t.Errorf("%s: accepted", manifest)
+		}
 	}
 }
