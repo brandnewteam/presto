@@ -26,7 +26,7 @@ func syncAllTargets(cmd *cobra.Command, asJSON bool, cfg config.Config, names []
 			break
 		}
 		target := cfg.Targets[name]
-		result, err := engine.Synchronize(cmd.Context(), snapshot, target.Root, dryRun, engine.SyncOptions{PrestaShop: target.PrestaShop, Logs: cmd.ErrOrStderr()})
+		result, err := engine.Synchronize(cmd.Context(), snapshot, target.Root, dryRun, engine.SyncOptions{PrestaShop: target.PrestaShop, Logs: cmd.ErrOrStderr(), Diff: dryRun})
 		if err != nil {
 			result.Error = err.Error()
 			failures = append(failures, fmt.Errorf("target %q: %w", name, err))

@@ -254,7 +254,7 @@ func syncCommand(opts *options, deployment bool) *cobra.Command {
 			}
 			result, err = remote.Deploy(cmd.Context(), target, snapshot, dryRun, cmd.ErrOrStderr())
 		} else {
-			result, err = engine.Synchronize(cmd.Context(), snapshot, target.Root, dryRun, engine.SyncOptions{PrestaShop: target.PrestaShop, Logs: cmd.ErrOrStderr()})
+			result, err = engine.Synchronize(cmd.Context(), snapshot, target.Root, dryRun, engine.SyncOptions{PrestaShop: target.PrestaShop, Logs: cmd.ErrOrStderr(), Diff: dryRun})
 		}
 		if err != nil {
 			if opts.json && result.Upgrade != nil && result.Error != "" {

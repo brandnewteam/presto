@@ -38,6 +38,8 @@ Result JSON has stable fields:
 }
 ```
 
+Dry runs add `diffs`, an object with one entry for each path in `updated`; created, deleted and preserved paths never get one. Each value is newline-terminated text: a unified diff of the destination copy to the new copy (`--- a/<path>`, `+++ b/<path>`, hunks with 3 context lines, `\ No newline at end of file` markers), or a note: `binary file differs: <old> → <new> bytes` for content with a NUL byte or invalid UTF-8, `file too large to diff: <old> → <new> bytes` above 4 MiB, `file mode changed: 0644 → 0755` (POSIX only, before any content diff) and `diff omitted: output limit reached`. A diff stops after 400 lines with `… N more lines`; once 2000 lines have been produced in total, the remaining paths get the omitted note. `diffs` is absent when nothing is updated and when applying.
+
 The three path arrays are always arrays, including when empty. Destination uses the receiver's native absolute path. Root symlinks are resolved before checking overlap. Source/destination overlap is an error. A shop root must contain a regular `config/config.inc.php` and a real `modules` directory.
 
 ## Synchronizing all local targets

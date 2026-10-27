@@ -24,6 +24,7 @@ type Result struct {
 	Updated     []string          `json:"updated"`
 	Deleted     []string          `json:"deleted"`
 	Unchanged   int               `json:"unchanged"`
+	Diffs       map[string]string `json:"diffs,omitempty"`
 	Upgrade     *lifecycle.Result `json:"upgrade,omitempty"`
 	Error       string            `json:"error,omitempty"`
 }
@@ -31,6 +32,8 @@ type Result struct {
 type SyncOptions struct {
 	PrestaShop *config.PrestaShop
 	Logs       io.Writer
+	// Diff adds Result.Diffs for updated files during a dry run.
+	Diff bool
 }
 
 // ShopModule refuses arbitrary destination directories; root must look like a shop.
@@ -216,7 +219,10 @@ func Synchronize(ctx context.Context, snapshot *Snapshot, shopRoot string, dryRu
 	sort.Strings(result.Created)
 	sort.Strings(result.Updated)
 	if dryRun {
-		return result, nil
+		if opts.Diff && len(result.Updated) > 0 {
+			result.Diffs, err = updatedDiffs(ctx, snapshot, destination, result.Updated, wanted, existing)
+		}
+		return result, err
 	}
 	var runner *lifecycle.Runner
 	if enabled {
